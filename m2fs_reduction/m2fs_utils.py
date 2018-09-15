@@ -2,10 +2,15 @@ from __future__ import (division, print_function, absolute_import,
                         unicode_literals)
 
 import numpy as np
-from astropy.io import fits
+from astropy.io import ascii, fits
+from astropy.table import Table
 from scipy import optimize
 import re
+import glob, os, sys
 
+##############
+# File I/O
+##############
 def mrdfits(fname, ext):
     """ Read fits file """
     with fits.open(fname) as hdulist:
@@ -45,28 +50,97 @@ def m2fs_load_files_two(fnames):
         headers.append(h)
     return imgarr, imgerrarr, headers
 
-#def m2fs_extract_ghlb(datafname,flatfname):
+def make_multispec(outfname, bands, bandids, header=None):
+    assert len(bands) == len(bandids)
+    Nbands = len(bands)
+    # create output image array
+    # Note we have to reverse the order of axes in a fits file
+    shape = bands[0].shape
+    output = np.zeros((Nbands, shape[1], shape[0]))
+    for k, (band, bandid) in enumerate(zip(bands, bandids)):
+        output[k] = band.T
+    if Nbands == 1:
+        output = output[0]
+        klist = [1,2]
+        wcsdim = 2
+    else:
+        klist = [1,2,3]
+        wcsdim = 3
     
+    hdu = fits.PrimaryHDU(output)
+    header = hdu.header
+    for k in klist:
+        header.append(("CDELT"+str(k), 1.))
+        header.append(("CD{}_{}".format(k,k), 1.))
+        header.append(("LTM{}_{}".format(k,k), 1))
+        header.append(("CTYPE"+str(k), "MULTISPE"))
+    header.append(("WCSDIM", wcsdim))
+    for k, bandid in enumerate(bandids):
+        header.append(("BANDID{}".format(k+1), bandid))
+    # Do not fill in wavelength/WAT2 yet
+    
+    hdulist = fits.HDUList([hdu])
+    hdulist.writeto(outfname, overwrite=True)
 
-def m2fs_extract1d(data, tracecoef, id, yaper=7, method="sum"):
-    nx = data.shape[0]
-    ypeak = np.polyval(tracecoef[id], np.arange(nx))
-    spec1d = np.zeros(nx)
-    outerror = np.zeros(nx)
-    vround = np.vectorize(lambda x: int(round(x)))
-    ix1s = vround(ypeak) - int(yaper/2.)
-    ix2s = ix1s + yaper
-    for j in range(nx):
-        flux = data[j,ix1s[j]:ix2s[j]]
-        if method == "sum":
+def parse_idb(fname):
+    with open(fname) as fp:
+        lines = fp.readlines()
+    istarts = []
+    for i,line in enumerate(lines):
+        if line.startswith("begin"): istarts.append(i)
+    Nlines = len(lines)
+    Naper = len(istarts)
+    
+    iranges = []
+    for j in range(Naper):
+        if j == Naper-1: iranges.append((istarts[j],Nlines))
+        else: iranges.append((istarts[j],istarts[j+1]))
+    output = {}
+    for j in range(Naper):
+        data = lines[iranges[j][0]:iranges[j][1]]
+        out = {}
+        Nskip = 0
+        for i, line in enumerate(data):
+            if Nskip > 0:
+                Nskip -= 1
+                continue
+            s = line.split()
             try:
-                spec1d[j] = np.nansum(flux)
-            except:
-                spec1d[j] = np.nan
+                key = s[0]
+                value = s[1]
+            except IndexError:
+                continue
+            if key == "begin": pass
+            elif key in ["id", "task","units","function"]:
+                out[key] = value
+            elif key == "image":
+                out[key] = " ".join(s[1:])
+            elif key in ["aperture","order","naverage","niterate"]:
+                out[key] = int(value)
+            elif key in ["aplow","aphigh","low_reject","high_reject","grow"]:
+                out[key] = float(value)
+            elif key in ["features"]:
+                Nfeatures = int(value)
+                Nskip = Nfeatures
+                linelist = list(map(lambda x: list(map(float, x.split()[:6])), data[(i+1):(i+1+Nfeatures)]))
+                out["features"] = np.array(linelist)
+            elif key in ["coefficients"]:
+                Ncoeff = int(value)
+                Nskip = Ncoeff
+                coeffarr = list(map(float, data[i+1:i+1+Ncoeff]))
+                out["coefficients"] = np.array(coeffarr)
+        if "aperture" in out:
+            aperture = out["aperture"]
         else:
-            raise NotImplementedError
-    return spec1d
+            im = out["image"]
+            aperture = int(re.findall(r".*\[\*,(\d+)\]", im)[0])
+        output[aperture]=out
 
+    return output
+
+############################
+# Misc math stuff
+############################
 def jds_poly_reject(x,y,ndeg,nsig_lower,nsig_upper,niter=5):
     good = np.ones(len(x), dtype=bool)
     w = np.arange(len(x))
@@ -110,6 +184,100 @@ def gaussfit(xdata, ydata, p0, **kwargs):
     #fit=gaussfit(auxx, auxy, coef, NTERMS=4, ESTIMATES=[auxdata[peak1[i]], peak1[i], 2, thresh/2.])
     
 
+def calc_wave(x, coeffs):
+    # only supports legendre poly right now
+    functype, order, xmin, xmax = coeffs[0:4]
+    coeffs = coeffs[4:]
+    assert functype == 2, functype
+    assert order == len(coeffs), (order, len(coeffs))
+    if order > 5:
+        print("Cutting order down to 5 from {}".format(order))
+        order = 5
+        coeffs = coeffs[:5]
+    #if x is None:
+    #    x = np.arange(int(np.ceil(xmin)), int(np.floor(xmax)))
+    #else:
+    #    assert np.all(np.logical_and(x >= xmin, x <= xmax))
+    
+    # IRAF is one-indexed, python is zero-indexed
+    x = x.copy() + 1
+    xn = (2*x - (xmax+xmin))/(xmax-xmin)
+    wl = np.polynomial.legendre.legval(xn, coeffs)
+    return wl
+
+def calc_wave_corr(xarr, coeffs, framenum, ipeak, pixcortable=None):
+    """
+    Calc wave, but with offset from the default arc
+    """
+    if pixcortable is None: pixcortable = np.load("arc1d/fit_frame_offsets.npy")
+    pixcor = pixcortable[framenum,ipeak]
+    # The correction is in pixels. We apply a zero-point offset based on this.
+    wave = calc_wave(xarr, coeffs)
+    dwave = np.nanmedian(np.diff(wave))
+    wavecor = pixcor * dwave
+    return wave + wavecor
+
+def load_frame2arc():
+    return np.loadtxt("frame_to_arc.txt",delimiter=',').astype(int)
+    
+
+
+
+
+##################
+# Creating DB file
+##################
+def get_exptype(header):
+    exptype = header["EXPTYPE"]
+    object = header["OBJECT"].lower()
+    if "tharne" in object:
+        exptype = "Comp"
+    elif "b1kw4k" in object:
+        exptype = "Flat"
+    return exptype
+def make_db_file(rawdir, dbname=None):
+    rawdir = os.path.abspath(rawdir)
+    if dbname is None:
+        dbname = os.path.join(os.path.dirname(rawdir),os.path.basename(rawdir)+"M2FS.db")
+    else:
+        dbname = os.path.abspath(dbname)
+    fnames = glob.glob(os.path.join(rawdir,"*c1.fits"))
+    
+    colheads = ["FILE","INST","CONFIG","FILTER","SLIT","BIN","SPEED","NAMP","DATE","UT-START","UT-END","MJD","EXPTIME","EXPTYPE","OBJECT"]
+    alldata = []
+    for fname in fnames:
+        with fits.open(fname) as hdul:
+            header = hdul[0].header
+        fname = os.path.abspath(fname)[:-7]
+        instrument = "-".join([header["INSTRUME"],header["SHOE"],header["SLIDE"]])
+        config = header["CONFIGFL"]
+        filter = header["FILTER"]
+        slitname = header["SLITNAME"].replace(" ","")
+        #plate = header["PLATE"]
+        binning = header["BINNING"]
+        speed = header["SPEED"]
+        nopamps = header["NOPAMPS"]
+        
+        date = header["UT-DATE"]
+        start = header["UT-TIME"]
+        end = header["UT-END"]
+        mjd = header["MJD"]
+        
+        exptime = header["EXPTIME"]
+        exptype = get_exptype(header)
+        object = header["OBJECT"]
+        
+        data = [fname, instrument, config, filter, slitname, binning, speed, nopamps, date, start, end, mjd, exptime, exptype, object]
+        alldata.append(data)
+    tab = Table(rows=alldata, names=colheads)
+    tab["EXPTIME"].format = ".1f"
+    tab["MJD"].format = ".3f"
+    tab.write(dbname,format="ascii.fixed_width_two_line",overwrite=True)
+
+
+##################
+# Pipeline calls
+##################
 def m2fs_biassubtract(ime, h):
     """
     ;+----------------------------------------------------------------------------
@@ -310,192 +478,7 @@ def m2fs_4amp(infile, outfile=None):
     h1.add_history('m2fs_biassubtract: Subtracted bias on a per column basis')
     h1.add_history('m2fs_4amp: Merged 4 amplifiers into single frame')
 
-    ## when writing, flip the array here (gets unflipped in write_fits_two)
-    ## This keeps conventions in a way that makes sense later.
-    #hdu1 = fits.PrimaryHDU(outim, h1)
-    #hdu2 = fits.ImageHDU(outerr)
-    #hdulist = fits.HDUList([hdu1, hdu2])
-    #hdulist.writeto(outfile, overwrite=True)
     write_fits_two(outfile, outim.T, outerr.T, h1)
-
-def make_multispec(outfname, bands, bandids, header=None):
-    assert len(bands) == len(bandids)
-    Nbands = len(bands)
-    # create output image array
-    # Note we have to reverse the order of axes in a fits file
-    shape = bands[0].shape
-    output = np.zeros((Nbands, shape[1], shape[0]))
-    for k, (band, bandid) in enumerate(zip(bands, bandids)):
-        output[k] = band.T
-    if Nbands == 1:
-        output = output[0]
-        klist = [1,2]
-        wcsdim = 2
-    else:
-        klist = [1,2,3]
-        wcsdim = 3
-    
-    hdu = fits.PrimaryHDU(output)
-    header = hdu.header
-    for k in klist:
-        header.append(("CDELT"+str(k), 1.))
-        header.append(("CD{}_{}".format(k,k), 1.))
-        header.append(("LTM{}_{}".format(k,k), 1))
-        header.append(("CTYPE"+str(k), "MULTISPE"))
-    header.append(("WCSDIM", wcsdim))
-    for k, bandid in enumerate(bandids):
-        header.append(("BANDID{}".format(k+1), bandid))
-    # Do not fill in wavelength/WAT2 yet
-    
-    hdulist = fits.HDUList([hdu])
-    hdulist.writeto(outfname, overwrite=True)
-
-def parse_idb(fname):
-    with open(fname) as fp:
-        lines = fp.readlines()
-    istarts = []
-    for i,line in enumerate(lines):
-        if line.startswith("begin"): istarts.append(i)
-    Nlines = len(lines)
-    Naper = len(istarts)
-    
-    iranges = []
-    for j in range(Naper):
-        if j == Naper-1: iranges.append((istarts[j],Nlines))
-        else: iranges.append((istarts[j],istarts[j+1]))
-    output = {}
-    for j in range(Naper):
-        data = lines[iranges[j][0]:iranges[j][1]]
-        out = {}
-        Nskip = 0
-        for i, line in enumerate(data):
-            if Nskip > 0:
-                Nskip -= 1
-                continue
-            s = line.split()
-            try:
-                key = s[0]
-                value = s[1]
-            except IndexError:
-                continue
-            if key == "begin": pass
-            elif key in ["id", "task","units","function"]:
-                out[key] = value
-            elif key == "image":
-                out[key] = " ".join(s[1:])
-            elif key in ["aperture","order","naverage","niterate"]:
-                out[key] = int(value)
-            elif key in ["aplow","aphigh","low_reject","high_reject","grow"]:
-                out[key] = float(value)
-            elif key in ["features"]:
-                Nfeatures = int(value)
-                Nskip = Nfeatures
-                linelist = list(map(lambda x: list(map(float, x.split()[:6])), data[(i+1):(i+1+Nfeatures)]))
-                out["features"] = np.array(linelist)
-            elif key in ["coefficients"]:
-                Ncoeff = int(value)
-                Nskip = Ncoeff
-                coeffarr = list(map(float, data[i+1:i+1+Ncoeff]))
-                out["coefficients"] = np.array(coeffarr)
-        if "aperture" in out:
-            aperture = out["aperture"]
-        else:
-            im = out["image"]
-            aperture = int(re.findall(r".*\[\*,(\d+)\]", im)[0])
-        output[aperture]=out
-
-    return output
-
-def calc_wave(x, coeffs):
-    # only supports legendre poly right now
-    functype, order, xmin, xmax = coeffs[0:4]
-    coeffs = coeffs[4:]
-    assert functype == 2, functype
-    assert order == len(coeffs), (order, len(coeffs))
-    if order > 5:
-        print("Cutting order down to 5 from {}".format(order))
-        order = 5
-        coeffs = coeffs[:5]
-    #if x is None:
-    #    x = np.arange(int(np.ceil(xmin)), int(np.floor(xmax)))
-    #else:
-    #    assert np.all(np.logical_and(x >= xmin, x <= xmax))
-    
-    # IRAF is one-indexed, python is zero-indexed
-    x = x.copy() + 1
-    xn = (2*x - (xmax+xmin))/(xmax-xmin)
-    wl = np.polynomial.legendre.legval(xn, coeffs)
-    return wl
-
-def calc_wave_corr(xarr, coeffs, framenum, ipeak, pixcortable=None):
-    """
-    Calc wave, but with offset from the default arc
-    """
-    if pixcortable is None: pixcortable = np.load("arc1d/fit_frame_offsets.npy")
-    pixcor = pixcortable[framenum,ipeak]
-    # The correction is in pixels. We apply a zero-point offset based on this.
-    wave = calc_wave(xarr, coeffs)
-    dwave = np.nanmedian(np.diff(wave))
-    wavecor = pixcor * dwave
-    return wave + wavecor
-
-def load_frame2arc():
-    return np.loadtxt("frame_to_arc.txt",delimiter=',').astype(int)
-    
-
-import glob, os, sys
-import pandas as pd
-from astropy.io import ascii, fits
-from astropy.table import Table
-def get_exptype(header):
-    exptype = header["EXPTYPE"]
-    object = header["OBJECT"].lower()
-    if "tharne" in object:
-        exptype = "Comp"
-    elif "b1kw4k" in object:
-        exptype = "Flat"
-    return exptype
-
-def make_db_file(rawdir, dbname=None):
-    rawdir = os.path.abspath(rawdir)
-    if dbname is None:
-        dbname = os.path.join(os.path.dirname(rawdir),os.path.basename(rawdir)+"M2FS.db")
-    else:
-        dbname = os.path.abspath(dbname)
-    fnames = glob.glob(os.path.join(rawdir,"*c1.fits"))
-    
-    colheads = ["FILE","INST","CONFIG","FILTER","SLIT","BIN","SPEED","NAMP","DATE","UT-START","UT-END","MJD","EXPTIME","EXPTYPE","OBJECT"]
-    alldata = []
-    for fname in fnames:
-        with fits.open(fname) as hdul:
-            header = hdul[0].header
-        fname = os.path.abspath(fname)[:-7]
-        instrument = "-".join([header["INSTRUME"],header["SHOE"],header["SLIDE"]])
-        config = header["CONFIGFL"]
-        filter = header["FILTER"]
-        slitname = header["SLITNAME"].replace(" ","")
-        #plate = header["PLATE"]
-        binning = header["BINNING"]
-        speed = header["SPEED"]
-        nopamps = header["NOPAMPS"]
-        
-        date = header["UT-DATE"]
-        start = header["UT-TIME"]
-        end = header["UT-END"]
-        mjd = header["MJD"]
-        
-        exptime = header["EXPTIME"]
-        exptype = get_exptype(header)
-        object = header["OBJECT"]
-        
-        data = [fname, instrument, config, filter, slitname, binning, speed, nopamps, date, start, end, mjd, exptime, exptype, object]
-        alldata.append(data)
-    tab = Table(rows=alldata, names=colheads)
-    tab["EXPTIME"].format = ".1f"
-    tab["MJD"].format = ".3f"
-    tab.write(dbname,format="ascii.fixed_width_two_line",overwrite=True)
-
-
 
 def m2fs_make_master_dark(filenames, outfname, exptime=3600.):
     """
@@ -530,12 +513,23 @@ def m2fs_subtract_one_dark(infile, outfile, dark, darkerr, darkheader):
     darksuberr = np.sqrt(imgerr**2 + darkerr**2)
     # Zero negative values: I don't want to do this
     write_fits_two(outfile, darksub, darksuberr, header)
-    
+
 def m2fs_make_master_flat(filenames, outfname):
     master_flat, master_flaterr, headers = m2fs_load_files_two(filenames)
     master_flat = np.median(master_flat, axis=0)
     master_flaterr = np.median(master_flaterr, axis=0)
     write_fits_two(outfname, master_flat, master_flaterr, headers[0])
     print("Created master flat and wrote to {}".format(outfname))
+def m2fs_parse_fibermap(fname):
+    with open(fname) as fp:
+        Nobj = int(fp.readline().strip())
+        Nord = int(fp.readline().strip())
+        ordlist = list(map(int, fp.readline().strip().split()))
+        lines = fp.readlines()
+    lines = list(map(lambda x: x.strip().split(), lines))
+    lines = Table(rows=lines, names=["tetris","fiber"])
+    print(Nobj,Nord,ordlist,lines)
+
 def m2fs_trace_orders():
     raise NotImplementedError
+

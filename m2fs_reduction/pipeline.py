@@ -23,6 +23,9 @@ def check_finished(workdir, task):
 def get_file(dbrowfile, workdir, suffix=""):
     return os.path.join(workdir, os.path.basename(dbrowfile)+suffix+".fits")
 
+#################################################
+# Pipeline steps
+#################################################
 def m2fs_biastrim(dbname, workdir):
     if check_finished(workdir, "biastrim"): return
     
@@ -53,7 +56,6 @@ def m2fs_darksub(dbname, workdir):
             m2fs_subtract_one_dark(fname, outfname, dark, darkerr, darkheader)
     
     mark_finished(workdir, "darksub")
-    
 def m2fs_traceflat(dbname, workdir):
     if check_finished(workdir, "traceflat"): return
     
@@ -67,6 +69,9 @@ def m2fs_traceflat(dbname, workdir):
     
     #mark_finished(workdir, "traceflat")
 
+#################################################
+# Script to run
+#################################################
 if __name__=="__main__":
     dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
     workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
@@ -86,4 +91,8 @@ if __name__=="__main__":
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
     m2fs_traceflat(dbname, workdir)
-    
+    # Associate arcs and flats to data
+    # M2FS wavecal
+    # M2FS profile
+    # M2FS extract
+    # M2FS skysub
