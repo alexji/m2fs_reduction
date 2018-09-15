@@ -1,0 +1,13 @@
+from m2fs_reduction.m2fs_utils import make_db_file
+from optparse import OptionParser
+
+parser = OptionParser()
+parser.add_option("-d", action="store", type=str, dest="directory",
+		  help="What directory to process")
+options, args = parser.parse_args()
+
+if len(args) == 1:
+    make_db_file(args[0])
+else:
+    assert options.directory is not None, "Must set directory!"
+    make_db_file(options.directory)
