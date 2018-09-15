@@ -209,7 +209,7 @@ def m2fs_biassubtract(ime, h):
     ime_bs = ime_bstemp
     return ime_bs
 
-def m2fs_4amp(infile):
+def m2fs_4amp(infile, outfile=None):
     """
     ;+----------------------------------------------------------------------------
     ; PURPOSE:
@@ -228,7 +228,8 @@ def m2fs_4amp(infile):
     ;+----------------------------------------------------------------------------
     """    
 
-    outfile=infile+'.fits'
+    if outfile is None:
+        outfile=infile+'.fits'
     
     # CONSTRUCT FILE NAMES
     c1name = infile + 'c1.fits'
@@ -494,3 +495,47 @@ def make_db_file(rawdir, dbname=None):
     tab["MJD"].format = ".3f"
     tab.write(dbname,format="ascii.fixed_width_two_line",overwrite=True)
 
+
+
+def m2fs_make_master_dark(filenames, outfname, exptime=3600.):
+    """
+    Make a master dark by taking the median of all dark frames
+    """
+    # Load data
+    master_dark, master_darkerr, headers = m2fs_load_files_two(filenames)
+    h = headers[0]
+    # Rescale to common exptime
+    for k in range(len(filenames)):
+        dh = headers[k]
+        if dh["EXPTIME"] != exptime:
+            master_dark[k] = master_dark[k] * exptime/dh["EXPTIME"]
+            master_darkerr[k] = master_darkerr[k] * np.sqrt(dh["EXPTIME"]/exptime)
+    # Take median + calculate error
+    master_dark = np.median(master_dark, axis=0)
+    master_darkerr = np.sqrt(np.sum(master_darkerr**2, axis=0))
+        
+    _ = h.pop("EXPTIME")
+    h["EXPTIME"] = exptime
+
+    write_fits_two(outfname, master_dark, master_darkerr, h)
+    print("Created dark frame with texp={} and wrote to {}".format(
+            exptime, outfname))
+def m2fs_subtract_one_dark(infile, outfile, dark, darkerr, darkheader):
+    """ Dark subtraction """
+    img, imgerr, header = read_fits_two(infile)
+    # Subtract dark
+    exptimeratio = header["EXPTIME"]/darkheader["EXPTIME"]
+    darksub = img - dark * exptimeratio
+    # Adjust the errors
+    darksuberr = np.sqrt(imgerr**2 + darkerr**2)
+    # Zero negative values: I don't want to do this
+    write_fits_two(outfile, darksub, darksuberr, header)
+    
+def m2fs_make_master_flat(filenames, outfname):
+    master_flat, master_flaterr, headers = m2fs_load_files_two(filenames)
+    master_flat = np.median(master_flat, axis=0)
+    master_flaterr = np.median(master_flaterr, axis=0)
+    write_fits_two(outfname, master_flat, master_flaterr, headers[0])
+    print("Created master flat and wrote to {}".format(outfname))
+def m2fs_trace_orders():
+    raise NotImplementedError
