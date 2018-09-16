@@ -6,7 +6,7 @@ from astropy.io import ascii, fits
 from astropy.table import Table
 from scipy import optimize
 import re
-import glob, os, sys
+import glob, os, sys, time
 
 ##############
 # File I/O
@@ -520,7 +520,7 @@ def m2fs_make_master_flat(filenames, outfname):
     master_flaterr = np.median(master_flaterr, axis=0)
     write_fits_two(outfname, master_flat, master_flaterr, headers[0])
     print("Created master flat and wrote to {}".format(outfname))
-def m2fs_parse_fibermap(fname):
+def m2fs_parse_fiberconfig(fname):
     with open(fname) as fp:
         Nobj = int(fp.readline().strip())
         Nord = int(fp.readline().strip())
@@ -528,8 +528,192 @@ def m2fs_parse_fibermap(fname):
         lines = fp.readlines()
     lines = list(map(lambda x: x.strip().split(), lines))
     lines = Table(rows=lines, names=["tetris","fiber"])
-    print(Nobj,Nord,ordlist,lines)
+    return Nobj, Nord, ordlist, lines
 
-def m2fs_trace_orders():
-    raise NotImplementedError
+def m2fs_get_trace_fnames(fname):
+    assert fname.endswith(".fits")
+    dir = os.path.dirname(fname)
+    name = os.path.basename(fname)[:-5]
+    fname1 = os.path.join(dir, name+"_tracecoeff.txt")
+    fname2 = os.path.join(dir, name+"_tracestdcoeff.txt")
+    fname3 = os.path.join(dir, name+"_trace.xy.txt")
+def m2fs_load_trace_function(flatname, fiberconfig):
+    """
+    Define a function y(iobj, iorder, x) using prefit functions
+    iobj = 0 starts from y ~ 0 (the bottom of the frame in DS9)
+    """
+    fin, _2, _3 = m2fs_get_trace_fnames(flatname)
+    coeff1, coeff2 = np.load(fin)
+    Nobjs, Norder = fiberconfig[0], fiberconfig[1]
+    Ntrace = Nobjs*Norders
+    assert coeff1.shape[1] == Ntrace
+    assert coeff2.shape[1] == Ntrace
+    functions = [np.poly1d(coeff1[:,j]) for j in range(Ntrace)]
+    def trace_func(iobj, iorder, x):
+        assert 0 <= iobj < Nobjs
+        assert 0 <= iorder < Norders
+        itrace = iobj*Norders + iorder
+        return functions[itrace](x)
+    return trace_func
+def m2fs_load_tracestd_function(workdir, fiberconfig):
+    """
+    Define a function ystd(iobj, iorder, x) using prefit functions
+    iobj = 0 starts from y ~ 0 (the bottom of the frame in DS9)
+    """
+    _1, fin, _3 = m2fs_get_trace_fnames()
+    coeff1, coeff2 = np.load(fin)
+    Nobjs, Norders = fiberconfig[0], fiberconfig[1]
+    Ntrace = Nobjs*Norders
+    assert coeff1.shape[1] == Ntrace
+    assert coeff2.shape[1] == Ntrace
+    functions = [np.poly1d(coeff2[:,j]) for j in range(Ntrace)]
+    def tracestd_func(iobj, iorder, x):
+        assert 0 <= iobj < Nobjs
+        assert 0 <= iorder < Norders
+        itrace = iobj*Norders + iorder
+        return functions[itrace](x)
+    return tracestd_func
+    
+def m2fs_trace_orders(fname, expected_fibers,
+                      nthresh=2.0, ystart=0, dx=20, dy=5, nstep=10, degree=4, ythresh=500,
+                      make_plot=True):
+    """
+    Order tracing by fitting. Adapted from Terese Hansen
+    """
+    data, edata, header = read_fits_two(fname)
+    nx, ny = data.shape
+    midx = round(nx/2.)
+    thresh = nthresh*np.median(data)
+    
+    # Find peaks at center of CCD
+    auxdata = np.zeros(ny)
+    for i in range(ny):
+        ix1 = int(np.floor(midx-dx/2.))
+        ix2 = int(np.ceil(midx+dx/2.))+1
+        auxdata[i] = np.median(data[ix1:ix2,i])
+    dauxdata = np.gradient(auxdata)
+    yarr = np.arange(ny)
+    peak1 = np.zeros(ny, dtype=bool)
+    for i in range(ny-1):
+        if (dauxdata[i] >= 0) and (dauxdata[i+1] < 0) and (auxdata[i] >= thresh) and (i > ystart):
+            peak1[i] = True
+    peak1 = np.where(peak1)[0]
+    npeak = len(peak1)
+    peak = np.zeros(npeak)
+    for i in range(npeak):
+        ix1 = int(np.floor(peak1[i]-dy/2.))
+        ix2 = int(np.ceil(peak1[i]+dy/2.))+1
+        auxx = yarr[ix1:ix2]
+        auxy = auxdata[ix1:ix2]
+        coef = gaussfit(auxx, auxy, [auxdata[peak1[i]], peak1[i], 2, thresh/2.])
+        peak[i] = coef[1]
+    assert npeak==expected_fibers
+    # TODO allow some interfacing of the parameters and plotting
 
+    ## FIRST TRACE: do in windows
+    # Trace peaks across dispersion direction
+    ypeak = np.zeros((nx,npeak))
+    ystdv = np.zeros((nx,npeak))
+    nopeak = np.zeros((nx,npeak))
+    ypeak[midx,:] = peak
+    start = time.time()
+    for i in range(npeak):
+        sys.stdout.write("\r")
+        sys.stdout.write("TRACING FIBER {} of {}".format(i+1,npeak))
+        # Trace right
+        for j in range(midx+nstep, nx, nstep):
+            ix1 = int(np.floor(j-dx/2.))
+            ix2 = int(np.ceil(j+dx/2.))+1
+            auxdata0 = np.median(data[ix1:ix2,:], axis=0)
+            #auxdata0 = np.zeros(ny)
+            #for k in range(ny):
+            #    auxdata0[i] = np.median(data[ix1:ix2,k])
+            auxthresh = 2*np.median(auxdata0)
+            ix1 = max(0,int(np.floor(ypeak[j-nstep,i]-dy/2.)))
+            ix2 = min(ny,int(np.ceil(ypeak[j-nstep,i]+dy/2.))+1)
+            auxx = yarr[ix1:ix2]
+            auxy = auxdata0[ix1:ix2]
+            # stop tracing orders that run out of signal
+            if (data[j,int(ypeak[j-nstep,i])] <= data[j-nstep,int(ypeak[j-2*nstep,i])]) and \
+               (data[j,int(ypeak[j-nstep,i])] <= ythresh):
+                break
+            if np.max(auxy) >= auxthresh:
+                coef = gaussfit(auxx, auxy, [auxdata0[int(ypeak[j-nstep,i])], ypeak[j-nstep,i], 2, thresh/2.],
+                                xtol=1e-6,maxfev=10000)
+                ypeak[j,i] = coef[1]
+                ystdv[j,i] = min(coef[2],dy/2.)
+            else:
+                ypeak[j,i] = ypeak[j-nstep,i] # so i don't get lost
+                ystdv[j,i] = ystdv[j-nstep,i]
+                nopeak[j,i] = 1
+        # Trace left
+        for j in range(midx-nstep, int(np.ceil(dx/2.))+1, -1*nstep):
+            #auxdata0 = np.zeros(ny)
+            ix1 = int(np.floor(j-dx/2.))
+            ix2 = min(nx, int(np.ceil(j+dx/2.))+1)
+            auxdata0 = np.median(data[ix1:ix2,:], axis=0)
+            #for k in range(ny):
+            #    auxdata0[i] = np.median(data[ix1:ix2,k])
+            auxthresh = 2*np.median(auxdata0)
+            ix1 = int(np.floor(ypeak[j+nstep,i]-dy/2.))
+            ix2 = min(ny, int(np.ceil(ypeak[j+nstep,i]+dy/2.))+1)
+            auxx = yarr[ix1:ix2]
+            auxy = auxdata0[ix1:ix2]
+            # stop tracing orders that run out of signal
+            if (data[j,int(ypeak[j+nstep,i])] <= data[j+nstep,int(ypeak[j+2*nstep,i])]) and \
+               (data[j,int(ypeak[j+nstep,i])] <= ythresh):
+                break
+            if np.max(auxy) >= auxthresh:
+                coef = gaussfit(auxx, auxy, [auxdata0[int(ypeak[j+nstep,i])], ypeak[j+nstep,i], 2, thresh/2.],
+                                xtol=1e-6,maxfev=10000)
+                ypeak[j,i] = coef[1]
+                ystdv[j,i] = min(coef[2], dy/2.)
+            else:
+                ypeak[j,i] = ypeak[j+nstep,i] # so i don't get lost
+                ystdv[j,i] = ystdv[j+nstep,i]
+                nopeak[j,i] = 1
+    ypeak[(nopeak == 1) | (ypeak == 0)] = np.nan
+    ystdv[(nopeak == 1) | (ypeak == 0)] = np.nan
+    print("\nTracing took {:.1f}s".format(time.time()-start))
+    
+    coeff = np.zeros((degree+1,npeak))
+    coeff2 = np.zeros((degree+1,npeak))
+    for i in range(npeak):
+        sel = np.isfinite(ypeak[:,i]) #np.where(ypeak[:,i] != -666)[0]
+        xarr_fit = np.arange(nx)[sel]
+        auxcoeff = np.polyfit(xarr_fit, ypeak[sel,i], degree)
+        coeff[:,i] = auxcoeff
+        auxcoeff2 = np.polyfit(xarr_fit, ystdv[sel,i], degree)
+        coeff2[:,i] = auxcoeff2
+
+    fname1, fname2, fname3 = m2fs_get_trace_fnames(fname)
+    np.savetxt(fname1, coeff.T)
+    np.savetxt(fname2, coeff2.T)
+    with open(fname3, "w") as fp:
+        for i in range(0, nx-1, 10):
+            for j in range(npeak):
+                fp.write("{}\t{}\n".format(i+1,np.polyval(coeff[:,j],i)+1))
+    
+    if make_plot:
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(20,20))
+        ax.imshow(data.T, origin="lower")
+        xarr = np.arange(2048)
+        for j in range(npeak):
+            ax.plot(xarr, np.polyval(coeff[:,j],xarr), color='orange', lw=.5)
+            ax.errorbar(xarr, ypeak[:,j], yerr=ystdv[:,j], fmt='r.', ms=1, elinewidth=.5)
+        fig.savefig("{}/{}_trace.png".format(
+                os.path.dirname(fname), os.path.basename(fname)[:-5]),
+                    dpi=300,bbox_inches="tight")
+        plt.close(fig)
+       
+        fig, ax = plt.subplots(figsize=(8,8))
+        stdevs = np.zeros((nx,npeak))
+        for j in range(npeak):
+            stdevs[:,j] = np.polyval(coeff2[:,j],xarr)
+        im = ax.imshow(stdevs.T, origin="lower", aspect='auto')
+        fig.colorbar(im)
+        fig.savefig("{}/{}_stdevs.png".format(
+                os.path.dirname(fname), os.path.basename(fname)[:-5]),
+                    dpi=300,bbox_inches="tight")
+        plt.close(fig)

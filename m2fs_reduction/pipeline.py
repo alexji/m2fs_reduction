@@ -5,7 +5,8 @@ import numpy as np
 import glob, os, sys, time
 from astropy.io import ascii
 
-from m2fs_utils import m2fs_4amp, read_fits_two
+from m2fs_utils import read_fits_two, write_fits_two, m2fs_parse_fiberconfig
+from m2fs_utils import m2fs_4amp
 from m2fs_utils import m2fs_make_master_dark, m2fs_subtract_one_dark
 from m2fs_utils import m2fs_make_master_flat, m2fs_trace_orders
 
@@ -56,7 +57,7 @@ def m2fs_darksub(dbname, workdir):
             m2fs_subtract_one_dark(fname, outfname, dark, darkerr, darkheader)
     
     mark_finished(workdir, "darksub")
-def m2fs_traceflat(dbname, workdir):
+def m2fs_traceflat(dbname, workdir, fiberconfig):
     if check_finished(workdir, "traceflat"): return
     
     ## Make a master flat
@@ -67,7 +68,12 @@ def m2fs_traceflat(dbname, workdir):
     fnames = [get_file(x, workdir) for x in flattab["FILE"]]
     m2fs_make_master_flat(fnames, masterflatname)
     
-    #mark_finished(workdir, "traceflat")
+    Nobj = fiberconfig[0]
+    Nord = fiberconfig[1]
+    expected_traces = Nobj * Nord
+    m2fs_trace_orders(masterflatname, expected_traces, make_plot=True)
+    
+    mark_finished(workdir, "traceflat")
 
 #################################################
 # Script to run
@@ -75,8 +81,10 @@ def m2fs_traceflat(dbname, workdir):
 if __name__=="__main__":
     dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
     workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
+    fiberconfigname = "data/Mg_wide_r.txt"
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
+    assert os.path.exists(fiberconfigname)
     
     ## I am assuming everything is part of the same setting
     tab = ascii.read(dbname)
@@ -88,11 +96,20 @@ if __name__=="__main__":
     assert len(np.unique(tab["SPEED"])) == 1, np.unique(tab["SPEED"])
     assert len(np.unique(tab["NAMP"])) == 1, np.unique(tab["NAMP"])
     
+    fiberconfig = m2fs_parse_fiberconfig(fiberconfigname)
+    
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
-    m2fs_traceflat(dbname, workdir)
-    # Associate arcs and flats to data
+    m2fs_traceflat(dbname, workdir, fiberconfig)
     # M2FS wavecal
+    # Fit Xccd,Yccd(obj, order, lambda)
     # M2FS profile
+    # Fit g(obj, order, lambda)
+    
     # M2FS extract
+    # Associate arcs and flats to data
+    # Forward Model Flux(obj,order,lambda)
+    # Sigma clip outlier pixels (cosmic rays) when fitting
+    
     # M2FS skysub
+    
