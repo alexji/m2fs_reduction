@@ -4,9 +4,9 @@ from __future__ import (division, print_function, absolute_import,
 import numpy as np
 from astropy.io import ascii, fits
 from astropy.table import Table
-from scipy import optimize
+from scipy import optimize, ndimage
 import re
-import glob, os, sys, time
+import glob, os, sys, time, subprocess
 
 ##############
 # File I/O
@@ -34,6 +34,12 @@ def read_fits_two(fname):
         d1 = hdulist[0].data.T
         d2 = hdulist[1].data.T
     return d1, d2, header
+
+def write_fits_one(outfname,d1,h):
+    """ Write fits files with one arrays """
+    hdu1 = fits.PrimaryHDU(d1.T, h)
+    hdulist = fits.HDUList([hdu1])
+    hdulist.writeto(outfname, overwrite=True)
 
 def m2fs_load_files_two(fnames):
     """ Create arrays of data from multiple fnames """
@@ -536,18 +542,17 @@ def m2fs_get_trace_fnames(fname):
     name = os.path.basename(fname)[:-5]
     fname1 = os.path.join(dir, name+"_tracecoeff.txt")
     fname2 = os.path.join(dir, name+"_tracestdcoeff.txt")
-    fname3 = os.path.join(dir, name+"_trace.xy.txt")
+    return fname1, fname2
 def m2fs_load_trace_function(flatname, fiberconfig):
     """
     Define a function y(iobj, iorder, x) using prefit functions
     iobj = 0 starts from y ~ 0 (the bottom of the frame in DS9)
     """
-    fin, _2, _3 = m2fs_get_trace_fnames(flatname)
-    coeff1, coeff2 = np.load(fin)
-    Nobjs, Norder = fiberconfig[0], fiberconfig[1]
+    fin, _2 = m2fs_get_trace_fnames(flatname)
+    coeff1 = np.loadtxt(fin).T
+    Nobjs, Norders = fiberconfig[0], fiberconfig[1]
     Ntrace = Nobjs*Norders
     assert coeff1.shape[1] == Ntrace
-    assert coeff2.shape[1] == Ntrace
     functions = [np.poly1d(coeff1[:,j]) for j in range(Ntrace)]
     def trace_func(iobj, iorder, x):
         assert 0 <= iobj < Nobjs
@@ -555,16 +560,15 @@ def m2fs_load_trace_function(flatname, fiberconfig):
         itrace = iobj*Norders + iorder
         return functions[itrace](x)
     return trace_func
-def m2fs_load_tracestd_function(workdir, fiberconfig):
+def m2fs_load_tracestd_function(flatname, fiberconfig):
     """
     Define a function ystd(iobj, iorder, x) using prefit functions
     iobj = 0 starts from y ~ 0 (the bottom of the frame in DS9)
     """
-    _1, fin, _3 = m2fs_get_trace_fnames()
-    coeff1, coeff2 = np.load(fin)
+    _1, fin = m2fs_get_trace_fnames(flatname)
+    coeff2 = np.loadtxt(fin).T
     Nobjs, Norders = fiberconfig[0], fiberconfig[1]
     Ntrace = Nobjs*Norders
-    assert coeff1.shape[1] == Ntrace
     assert coeff2.shape[1] == Ntrace
     functions = [np.poly1d(coeff2[:,j]) for j in range(Ntrace)]
     def tracestd_func(iobj, iorder, x):
@@ -574,7 +578,7 @@ def m2fs_load_tracestd_function(workdir, fiberconfig):
         return functions[itrace](x)
     return tracestd_func
     
-def m2fs_trace_orders(fname, expected_fibers,
+def m2fs_trace_orders(fname, fiberconfig,
                       nthresh=2.0, ystart=0, dx=20, dy=5, nstep=10, degree=4, ythresh=500,
                       make_plot=True):
     """
@@ -584,6 +588,9 @@ def m2fs_trace_orders(fname, expected_fibers,
     nx, ny = data.shape
     midx = round(nx/2.)
     thresh = nthresh*np.median(data)
+    
+    Nobjs, Norders = fiberconfig[0], fiberconfig[1]
+    expected_fibers = Nobjs * Norders
     
     # Find peaks at center of CCD
     auxdata = np.zeros(ny)
@@ -686,34 +693,67 @@ def m2fs_trace_orders(fname, expected_fibers,
         auxcoeff2 = np.polyfit(xarr_fit, ystdv[sel,i], degree)
         coeff2[:,i] = auxcoeff2
 
-    fname1, fname2, fname3 = m2fs_get_trace_fnames(fname)
+    fname1, fname2 = m2fs_get_trace_fnames(fname)
+    print(fname,fname1,fname2)
     np.savetxt(fname1, coeff.T)
     np.savetxt(fname2, coeff2.T)
-    with open(fname3, "w") as fp:
-        for i in range(0, nx-1, 10):
-            for j in range(npeak):
-                fp.write("{}\t{}\n".format(i+1,np.polyval(coeff[:,j],i)+1))
     
     if make_plot:
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(20,20))
         ax.imshow(data.T, origin="lower")
         xarr = np.arange(2048)
-        for j in range(npeak):
-            ax.plot(xarr, np.polyval(coeff[:,j],xarr), color='orange', lw=.5)
-            ax.errorbar(xarr, ypeak[:,j], yerr=ystdv[:,j], fmt='r.', ms=1, elinewidth=.5)
+        #for j in range(npeak):
+        #    ax.plot(xarr, np.polyval(coeff[:,j],xarr), color='orange', lw=.5)
+        #    ax.errorbar(xarr, ypeak[:,j], yerr=ystdv[:,j], fmt='r.', ms=1, elinewidth=.5)
+        tracefn = m2fs_load_trace_function(fname, fiberconfig)
+        trstdfn = m2fs_load_tracestd_function(fname, fiberconfig)
+        for i in range(Nobjs):
+            for j in range(Norders):
+                yarr = tracefn(i,j,xarr)
+                eyarr = trstdfn(i,j,xarr)
+                ax.plot(xarr, yarr, color='orange', lw=.5)
+                ax.errorbar(xarr[::nstep], yarr[::nstep], yerr=eyarr[::nstep], fmt='r.', ms=1., elinewidth=.5)
         fig.savefig("{}/{}_trace.png".format(
                 os.path.dirname(fname), os.path.basename(fname)[:-5]),
                     dpi=300,bbox_inches="tight")
         plt.close(fig)
-       
+        
         fig, ax = plt.subplots(figsize=(8,8))
         stdevs = np.zeros((nx,npeak))
-        for j in range(npeak):
-            stdevs[:,j] = np.polyval(coeff2[:,j],xarr)
+        #for j in range(npeak):
+        #    stdevs[:,j] = np.polyval(coeff2[:,j],xarr)
+        for i in range(Nobjs):
+            for j in range(Norders):
+                stdevs[:,i*Norders+j] = trstdfn(i,j,xarr)
         im = ax.imshow(stdevs.T, origin="lower", aspect='auto')
         fig.colorbar(im)
         fig.savefig("{}/{}_stdevs.png".format(
                 os.path.dirname(fname), os.path.basename(fname)[:-5]),
                     dpi=300,bbox_inches="tight")
         plt.close(fig)
+
+def medsubtract(fin, fout, size=15):
+    d, e, h = read_fits_two(fin)
+    m = ndimage.median_filter(d, size=size)
+    write_fits_one(fout, d-m, h)
+    
+def m2fs_wavecal_find_sources(fname, workdir):
+    assert fname.endswith(".fits")
+    dir = os.path.dirname(fname)
+    name = os.path.basename(fname)[:-5]
+    thispath = os.path.dirname(__file__)
+    sourcefind_path = os.path.join(thispath,"source_finding")
+    medfiltname = os.path.join(dir,name+"m.fits")
+    
+    ## Median filter
+    if not os.path.exists(medfiltname):
+        print("Running median filter on {}".format(fname))
+        medsubtract(fname, medfiltname)
+    
+    ## Other filters could be done here, if needed...
+    
+    ## Run sextractor from the shell
+    cmd = "sex {0:} -c {1:}/batch_config.sex -parameters_name {1:}/default.param -filter_name {1:}/default.conv -catalog_name {2:}_sources.cat -checkimage_type OBJECTS -checkimage_name {2:}_chkobj.fits".format(medfiltname, sourcefind_path, os.path.join(workdir, name+"m"))
+    subprocess.run(cmd, shell=True)
+    
