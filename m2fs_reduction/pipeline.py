@@ -9,7 +9,7 @@ from m2fs_utils import read_fits_two, write_fits_two, m2fs_parse_fiberconfig
 from m2fs_utils import m2fs_4amp
 from m2fs_utils import m2fs_make_master_dark, m2fs_subtract_one_dark
 from m2fs_utils import m2fs_make_master_flat, m2fs_trace_orders
-from m2fs_utils import m2fs_wavecal_find_sources
+from m2fs_utils import m2fs_wavecal_find_sources_one_arc
 
 #################################################
 # Tools to see if you have already done a step
@@ -73,9 +73,8 @@ def m2fs_traceflat(dbname, workdir, fiberconfig):
     
     mark_finished(workdir, "traceflat")
 
-def m2fs_wavecal(dbname, workdir, fiberconfig):
-    if check_finished(workdir, "arcid"): return
-    
+def m2fs_wavecal_find_sources(dbname, workdir):
+    if check_finished(workdir, "wavecal-findsources"): return
     ## Get list of arcs to process
     tab = ascii.read(dbname)
     filter = np.unique(tab["FILTER"])[0]
@@ -84,21 +83,43 @@ def m2fs_wavecal(dbname, workdir, fiberconfig):
     print("Found {} arc frames".format(len(arctab)))
     fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
     
-    ## Read pre-identified coordinates
-    print("Reading identifications from (xx todo)")
-    identified_sources = None # TODO use dbname and fiberconfig to get this somehow
-    #print("{} features identified".format(len(identified_sources)))
-    
+    start = time.time()
     for fname in fnames:
         ## Find sources
-        m2fs_wavecal_find_sources(fname, workdir)
-        
-        ## Use CPD to identify points
-        #m2fs_wavecal_identify_sources(fname, workdir, identified_sources)
-        
-        ## Fit wavelength solution and new trace from identified points
-        #m2fs_wavecal_fit_solution(fname, workdir, fiberconfig)
-        #break
+        m2fs_wavecal_find_sources_one_arc(fname, workdir)
+    print("Finding all sources took {:.1f}s".format(time.time()-start))
+    mark_finished(workdir, "wavecal-findsources")
+    
+def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig):
+    pass
+#def m2fs_wavecal(dbname, workdir, fiberconfig):
+#    #if check_finished(workdir, "arcid"): return
+#    
+#    ## Get list of arcs to process
+#    tab = ascii.read(dbname)
+#    filter = np.unique(tab["FILTER"])[0]
+#    config = np.unique(tab["CONFIG"])[0]
+#    arctab = tab[tab["EXPTYPE"]=="Comp"]
+#    print("Found {} arc frames".format(len(arctab)))
+#    fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+#    
+#    ## Read pre-identified coordinates
+#    print("Reading identifications from (xx todo)")
+#    # iobj, iorder, itetris, X, Y, L, Ycen
+#    identified_sources = None # TODO use dbname and fiberconfig to get this somehow
+#    #print("{} features identified".format(len(identified_sources)))
+#    
+#    for fname in fnames:
+#        pass
+#        ## Find sources
+#        #m2fs_wavecal_find_sources_one_arc(fname, workdir)
+#        
+#        ## Use CPD to identify points
+#        #m2fs_wavecal_identify_sources(fname, workdir, identified_sources)
+#        
+#        ## Fit wavelength solution and new trace from identified points
+#        #m2fs_wavecal_fit_solution(fname, workdir, fiberconfig)
+#        #break
 
 #################################################
 # Script to run
@@ -127,13 +148,14 @@ if __name__=="__main__":
     m2fs_darksub(dbname, workdir)
     m2fs_traceflat(dbname, workdir, fiberconfig)
     
-    
-    # M2FS wavecal
-    # Find sources in 2D arc spectrum (currently a separate step running sextractor)
+    ### M2FS wavecal
+    ## Find sources in 2D arc spectrum (currently a separate step running sextractor)
+    m2fs_wavecal_find_sources(dbname, workdir)
     # NOTE: IF AN ARC HAS NOT BEEN IDENTIFIED, IT NEEDS TO BE DONE MANUALLY NOW
-    # Identify features in 2D spectrum with coherent point drift
-    # Use features to fit Xccd,Yccd(obj, order, lambda)
-    m2fs_wavecal(dbname, workdir, fiberconfig)
+    ## Identify features in 2D spectrum with coherent point drift
+    m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig)
+    ## Use features to fit Xccd,Yccd(obj, order, lambda)
+    #m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig)
     
     # M2FS profile
     # Fit g(obj, order, lambda)

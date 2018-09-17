@@ -738,7 +738,7 @@ def medsubtract(fin, fout, size=15):
     m = ndimage.median_filter(d, size=size)
     write_fits_one(fout, d-m, h)
     
-def m2fs_wavecal_find_sources(fname, workdir):
+def m2fs_wavecal_find_sources_one_arc(fname, workdir):
     assert fname.endswith(".fits")
     dir = os.path.dirname(fname)
     name = os.path.basename(fname)[:-5]
@@ -750,10 +750,43 @@ def m2fs_wavecal_find_sources(fname, workdir):
     if not os.path.exists(medfiltname):
         print("Running median filter on {}".format(fname))
         medsubtract(fname, medfiltname)
-    
     ## Other filters could be done here, if needed...
     
     ## Run sextractor from the shell
     cmd = "sex {0:} -c {1:}/batch_config.sex -parameters_name {1:}/default.param -filter_name {1:}/default.conv -catalog_name {2:}_sources.cat -checkimage_type OBJECTS -checkimage_name {2:}_chkobj.fits".format(medfiltname, sourcefind_path, os.path.join(workdir, name+"m"))
     subprocess.run(cmd, shell=True)
+    
+def m2fs_wavecal_identify_sources_one_arc(fname, workdir, fiberconfig,
+                                          identified_sources, max_match_dist=2.0):
+    ## Load positions of previously identified sources
+    identified_positions = np.vstack([identified_sources["X"],identified_sources["Y"]]).T
+    
+    ## Load current source positions
+    name = os.path.basename(fname)[:-5]
+    source_catalog_fname = os.path.join(workdir, name+"m_sources.cat")
+    sources = Table.read(source_catalog_fname,hdu=2)
+    # Allow neighbors and blends, but not anything else bad
+    sources = sources[sources["FLAGS"] < 4]
+    Xs = sources["XWIN_IMAGE"] - 1.0
+    Ys = sources["YWIN_IMAGE"] - 1.0
+    source_positions = np.vstack([Xs,Ys]).T
+    
+    ## Match identified sources to sources with kdtree or CPD
+    distances, indexes = kdtree.query(identified_positions, distance_upper_bound=max_match_dist)
+    finite = np.isfinite(distances)
+    num_matched = np.sum(finite)
+    assert np.sum(finite) == len(np.unique(indexes[finite])), "Did not match identified sources uniquely!"
+    print("Matched {}/{} identified features".format(num_matched, len(finite)))
+    
+    iobjs = identified_sources[finite]["iobj"]
+    iorders = identified_sources[finite]["iorder"]
+    itetris = identified_sources[finite]["itetris"]
+    Ycs = identified_sources[finite]["Ycen"]
+    Ls = identified_sources[finite]["L"]
+    Xi = Xs[indexes[finite]]
+    Yi = Ys[indexes[finite]]
+    data = Table([iobjs,iorders,itetris,Ycs,Ls,Xi,Yi],
+                 names=["iobj","iorder","itetris","Ycen","L","X","Y"])
+    
+    # TODO write out somewhere
     
