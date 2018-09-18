@@ -4,7 +4,8 @@ from __future__ import (division, print_function, absolute_import,
 import numpy as np
 from astropy.io import ascii, fits
 from astropy.table import Table
-from scipy import optimize, ndimage
+from astropy.stats import biweight_location, biweight_scale
+from scipy import optimize, ndimage, spatial, linalg
 import re
 import glob, os, sys, time, subprocess
 
@@ -756,8 +757,7 @@ def m2fs_wavecal_find_sources_one_arc(fname, workdir):
     cmd = "sex {0:} -c {1:}/batch_config.sex -parameters_name {1:}/default.param -filter_name {1:}/default.conv -catalog_name {2:}_sources.cat -checkimage_type OBJECTS -checkimage_name {2:}_chkobj.fits".format(medfiltname, sourcefind_path, os.path.join(workdir, name+"m"))
     subprocess.run(cmd, shell=True)
     
-def m2fs_wavecal_identify_sources_one_arc(fname, workdir, fiberconfig,
-                                          identified_sources, max_match_dist=2.0):
+def m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources, max_match_dist=2.0):
     ## Load positions of previously identified sources
     identified_positions = np.vstack([identified_sources["X"],identified_sources["Y"]]).T
     
@@ -766,18 +766,19 @@ def m2fs_wavecal_identify_sources_one_arc(fname, workdir, fiberconfig,
     source_catalog_fname = os.path.join(workdir, name+"m_sources.cat")
     sources = Table.read(source_catalog_fname,hdu=2)
     # Allow neighbors and blends, but not anything else bad
-    sources = sources[sources["FLAGS"] < 4]
+    iigoodflag = sources["FLAGS"] < 4
+    sources = sources[iigoodflag]
     Xs = sources["XWIN_IMAGE"] - 1.0
     Ys = sources["YWIN_IMAGE"] - 1.0
     source_positions = np.vstack([Xs,Ys]).T
+    print("Identifying sources in {} ({}/{} have good flags)".format(
+            source_catalog_fname, len(sources), len(iigoodflag)))
     
-    ## Match identified sources to sources with kdtree or CPD
+    ## Match identified sources to actual sources, approximate
+    kdtree = spatial.KDTree(source_positions)
     distances, indexes = kdtree.query(identified_positions, distance_upper_bound=max_match_dist)
     finite = np.isfinite(distances)
     num_matched = np.sum(finite)
-    assert np.sum(finite) == len(np.unique(indexes[finite])), "Did not match identified sources uniquely!"
-    print("Matched {}/{} identified features".format(num_matched, len(finite)))
-    
     iobjs = identified_sources[finite]["iobj"]
     iorders = identified_sources[finite]["iorder"]
     itetris = identified_sources[finite]["itetris"]
@@ -785,8 +786,220 @@ def m2fs_wavecal_identify_sources_one_arc(fname, workdir, fiberconfig,
     Ls = identified_sources[finite]["L"]
     Xi = Xs[indexes[finite]]
     Yi = Ys[indexes[finite]]
+    
+    ## Transform identified points to actual points
+    ## Right now just a mean zero-point offset in X and Y, no scaling/rotation
+    ## TODO can update to affine transformation or CPD, depending on if it works or not
+    dX = biweight_location(Xi - identified_sources[finite]["X"])
+    dY = biweight_location(Yi - identified_sources[finite]["Y"])
+    print("Mean overall shift: dX={:.3f} dY={:.3f}".format(dX, dY))
+    if np.isnan(dX): dX = 0.0; print("biweight_location failed, setting dX=0")
+    if np.isnan(dY): dY = 0.0; print("biweight_location failed, setting dY=0")
+    identified_positions[:,0] = identified_positions[:,0] + dX
+    identified_positions[:,1] = identified_positions[:,1] + dY
+    
+    ## Do final match after transformation
+    distances, indexes = kdtree.query(identified_positions, distance_upper_bound=max_match_dist)
+    finite = np.isfinite(distances)
+    num_matched = np.sum(finite)
+    assert np.sum(finite) == len(np.unique(indexes[finite])), "Did not match identified sources uniquely!"
+    print("Matched {}/{} identified features".format(num_matched, len(finite)))
+    
+    ## Save out the data
+    iobjs = identified_sources[finite]["iobj"]
+    iorders = identified_sources[finite]["iorder"]
+    itetris = identified_sources[finite]["itetris"]
+    Ycs = identified_sources[finite]["Ycen"] + dY
+    Ls = identified_sources[finite]["L"]
+    Xi = Xs[indexes[finite]]
+    Yi = Ys[indexes[finite]]
     data = Table([iobjs,iorders,itetris,Ycs,Ls,Xi,Yi],
                  names=["iobj","iorder","itetris","Ycen","L","X","Y"])
     
-    # TODO write out somewhere
+    data.write(os.path.join(workdir, name+"_wavecal_id.txt"), format="ascii", overwrite=True)
     
+
+def make_wavecal_feature_matrix(ycen,iobj,iord,wave,
+                                Nobj,trueord,wavemin,wavemax,
+                                ycenmin,ycenmax,deg):
+    """
+    Convert identified features into a feature matrix.
+    
+    Parameterization:
+    X = fX(ycen, nord, nord*wave) + X0(iobj)
+    Y = fY(ycen, nord, nord*wave) + Y0(iobj)
+    fX and fY are 3D legendre polynomials, X0 and Y0 are offsets for each object.
+    
+    First 4 variables are for each identified feature in the arc:
+    ycen = y-coordinate of object trace at center of image (X=1024)
+           needs to be the same order for every object
+    iobj = object number of the feature, from 0 to Nobj-1
+           (note ycen and iobj are paired 1-1, but we need both values here)
+    iord = index of feature order number (into trueord to get actual nord)
+           from 0 to len(trueord)-1
+    wave = wavelength of feature
+    
+    Next variables are used for normalization.
+    Nobj: total number of objects
+    trueord: map from iord to nord
+    wavemin, wavemax: used to standardize wave from -1 to 1
+    ycenmin, ycenmax: used to standardize ycen from -1 to 1
+    
+    degree is a 3-length tuple/list of integers, passed to np.polynomial.legendre.legvander3d
+
+    Note: IRAF ecidentify describes the basic functional form of order number.
+    Let yord = offset +/- iord (to get the true order number)
+    Then fit lambda = f(x, yord)/yord
+    This means that wave -> wave*yord is a better variable to fit when determining x
+    """
+    try: N1 = len(ycen)
+    except TypeError: N1 = 1
+    try: N2 = len(iord)
+    except TypeError: N2 = 1
+    try: N3 = len(wave)
+    except TypeError: N3 = 1
+    N = np.max([N1,N2,N3])
+    
+    if N1 == 1: ycen = np.full(N, ycen)
+    if N2 == 1: iord = np.full(N, iord)
+    if N3 == 1: wave = np.full(N, wave)
+    
+    def center(x,xmin=None,xmax=None):
+        """ Make x go from -1 to 1 """
+        x = np.array(x)
+        if xmin is None: xmin = np.nanmin(x)
+        else: assert np.all(np.logical_or(x >= xmin, np.isnan(x)))
+        if xmax is None: xmax = np.nanmax(x)
+        else: assert np.all(np.logical_or(x <= xmax, np.isnan(x)))
+        xmean = (xmax+xmin)/2.
+        xdiff = (xmax-xmin)/2.
+        return (x - xmean)/xdiff
+    
+    # Normalize coordinates to -1, 1
+    ycennorm = center(ycen,ycenmin,ycenmax)
+    
+    # Normalize order number to -1, 1
+    cord = np.array(trueord)[iord]
+    cordmin, cordmax = np.min(trueord), np.max(trueord)
+    cordnorm = center(cord,cordmin,cordmax)
+    
+    # Convert wave -> wave * cord
+    waveord = cord * wave
+    waveordmin = wavemin * np.min(trueord)
+    waveordmax = wavemax * np.max(trueord)
+    waveordnorm = center(waveord, waveordmin, waveordmax)
+    
+    # Legendre(ycen, nord, wave*nord, degrees)
+    legpolymat = np.polynomial.legendre.legvander3d(ycennorm, cordnorm, waveordnorm, deg)
+    # Add a constant offset for each object
+    # Use indicator variables, dropping the last object to remove degeneracy
+    indicatorpolymat = np.zeros((len(legpolymat), Nobj-1))
+    for it in range(Nobj-1):
+        indicatorpolymat[iobj==it,it] = 1.
+    return np.concatenate([legpolymat, indicatorpolymat], axis=1)
+
+def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
+                                      make_plot=True):
+    ## parameters of the fit. Should do this eventually with a config file, kwargs, or something.
+    maxiter = 5
+    min_lines_per_order = 10
+    sigma = 3.
+    ycenmin = 0.
+    ycenmax = 2055.
+    deg = [3,3,5]
+    
+    ## Load identified wavelength features
+    name = os.path.basename(fname)[:-5]
+    data = ascii.read(os.path.join(workdir, name+"_wavecal_id.txt"))
+    outfname = os.path.join(workdir, name+"_wavecal_fitdata.npy")
+    print("Fitting wavelength solution for {} ({} features)".format(fname, len(data)))
+    
+    ## TODO GET ALL THESE FROM FIBERCONFIG
+    wavemin, wavemax = 5100., 5450.
+    Nobj, Norder, trueord = fiberconfig[0], fiberconfig[1], fiberconfig[2]
+    
+    ## Construct feature matrix to fit
+    Xmat = make_wavecal_feature_matrix(data["Ycen"],data["iobj"],data["iorder"],data["L"], 
+                                       Nobj, trueord, wavemin, wavemax,
+                                       ycenmin, ycenmax, deg)
+    good = np.ones(len(Xmat), dtype=bool)
+    ymat = np.vstack([data["X"],data["Y"]]).T
+    ## Solve for fit with all features
+    pfit, residues, rank, svals = linalg.lstsq(Xmat, ymat)
+    
+    ## Iterative sigma clipping and refitting
+    for iter in range(maxiter):
+        print("Iteration {}: {} features to start".format(iter+1, np.sum(good)))
+        ## Find outliers in each order
+        ## I decided to do it this way for easier interpretability, rather than
+        ## a global sigma-clip rejection
+        yfitall = Xmat.dot(pfit)
+        dX, dY = (ymat - yfitall).T
+        to_clip = np.zeros(len(Xmat), dtype=bool)
+        for iobj in range(Nobj):
+            for iorder in range(Norder):
+                iiobjorder = np.logical_and(data["iobj"]==iobj,
+                                            data["iorder"]==iorder)
+                iiobjorderused = np.logical_and(iiobjorder, good)
+                
+                # Skip if too few lines
+                if np.sum(iiobjorderused) <= min_lines_per_order: continue
+                # TODO: add back lines if less
+                
+                ## Find outliers and sigma clip them
+                tdX, tdY = dX[iiobjorderused], dY[iiobjorderused]
+                dXcen, dXstd = biweight_location(tdX), biweight_scale(tdX)
+                dYcen, dYstd = biweight_location(tdY), biweight_scale(tdY)
+                
+                to_clip_X = np.logical_and(iiobjorderused, np.abs((dX-dXcen)/dXstd) > sigma)
+                to_clip_Y = np.logical_and(iiobjorderused, np.abs((dY-dYcen)/dYstd) > sigma)
+                if np.sum(iiobjorderused) - np.sum(to_clip_X | to_clip_Y) < min_lines_per_order:
+                    print("    Could not clip {}/{} features from obj {} order {}".format(
+                            np.sum(to_clip_X | to_clip_Y), np.sum(iiobjorderused), iobj, iorder))
+                    continue
+                else:
+                    to_clip = np.logical_or(to_clip, np.logical_or(to_clip_X, to_clip_Y))
+                
+        good = np.logical_and(good, np.logical_not(to_clip))
+        print("  Cut down to {} features".format(np.sum(good)))
+        
+        ## Rerun fit on valid features
+        ## this Xmat, this Ymat
+        tXmat = Xmat[good]
+        tymat = ymat[good]
+        pfit, residues, rank, svals = linalg.lstsq(tXmat, tymat)
+    
+    ## Information to save:
+    np.save(outfname, [pfit, good, Xmat, data["iobj"], data["iorder"], trueord, Nobj, maxiter, deg, sigma])
+    
+    if make_plot:
+        import matplotlib.pyplot as plt
+        yfitall = Xmat.dot(pfit)
+        fig, axes = plt.subplots(Nobj,Norder, figsize=(Norder*4,Nobj*3))
+        figfname = os.path.join(workdir, name+"_wavecal_fitdata.png")
+        for iobj in range(Nobj):
+            for iorder in range(Norder):
+                ax = axes[iobj, iorder]
+                iiobjorder = np.logical_and(data["iobj"]==iobj,
+                                            data["iorder"]==iorder)
+                iiobjorderused = np.logical_and(iiobjorder, good)
+                Lall = data["L"][iiobjorder]
+                Xall = data["X"][iiobjorder]-yfitall[iiobjorder,0]
+                Yall = data["Y"][iiobjorder]-yfitall[iiobjorder,1]
+                Nall = len(Lall)
+                Luse = data["L"][iiobjorderused]
+                Xuse = data["X"][iiobjorderused]-yfitall[iiobjorderused,0]
+                Yuse = data["Y"][iiobjorderused]-yfitall[iiobjorderused,1]
+                Nuse = len(Luse)
+                ax.axhline(0,color='k',linestyle=':')
+                ax.set_ylim(-1,1)
+                l, = ax.plot(Lall, Xall, '.')
+                ax.plot(Luse, Xuse, 'o', color=l.get_color())
+                l, = ax.plot(Lall, Yall, '.')
+                ax.plot(Luse, Yuse, 'o', color=l.get_color())
+                Xrms = np.std(Xuse)
+                Yrms = np.std(Yuse)
+                ax.set_title("N={}, used={} Xstd={:.2f} Ystd={:.2f}".format(
+                        Nall,Nuse,Xrms,Yrms))
+        fig.savefig(figfname, bbox_inches="tight")
+        plt.close(fig)
