@@ -529,13 +529,22 @@ def m2fs_make_master_flat(filenames, outfname):
     print("Created master flat and wrote to {}".format(outfname))
 def m2fs_parse_fiberconfig(fname):
     with open(fname) as fp:
+        # First three lines: Nobj, Nord, trueord
         Nobj = int(fp.readline().strip())
         Nord = int(fp.readline().strip())
         ordlist = list(map(int, fp.readline().strip().split()))
+        
+        # Next Nord lines: wlmin, wlmax
+        ordwaveranges = []
+        for j in range(Nord):
+            wl1, wl2 = list(map(float, fp.readline().strip().split()))
+            ordwaveranges.append([wl1,wl2])
+        
+        # All other order lines are tetris and fiber info
         lines = fp.readlines()
     lines = list(map(lambda x: x.strip().split(), lines))
     lines = Table(rows=lines, names=["tetris","fiber"])
-    return Nobj, Nord, ordlist, lines
+    return Nobj, Nord, ordlist, ordwaveranges, lines
 
 def m2fs_get_trace_fnames(fname):
     assert fname.endswith(".fits")
@@ -891,10 +900,10 @@ def make_wavecal_feature_matrix(ycen,iobj,iord,wave,
     
     # Legendre(ycen, nord, wave*nord, degrees)
     legpolymat = np.polynomial.legendre.legvander3d(ycennorm, cordnorm, waveordnorm, deg)
-    # Add a constant offset for each object
-    # Use indicator variables, dropping the last object to remove degeneracy
-    indicatorpolymat = np.zeros((len(legpolymat), Nobj-1))
-    for it in range(Nobj-1):
+    legpolymat = legpolymat[:,1:] # Get rid of the constant offset here
+    # Add a constant offset for each object with indicator variables
+    indicatorpolymat = np.zeros((len(legpolymat), Nobj))
+    for it in range(Nobj):
         indicatorpolymat[iobj==it,it] = 1.
     return np.concatenate([legpolymat, indicatorpolymat], axis=1)
 

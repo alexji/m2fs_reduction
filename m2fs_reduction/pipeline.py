@@ -125,7 +125,7 @@ def m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig):
     
     start = time.time()
     for fname in fnames:
-        m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig)
+        m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig, make_plot=True)
     print("Fitting wavelength solutions took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "wavecal-fitsolution")
 
@@ -164,7 +164,7 @@ if __name__=="__main__":
     m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig)
     ## Use features to fit Xccd,Yccd(obj, order, lambda)
     m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig)
-    
+
     # M2FS profile
     # Fit g(obj, order, lambda)
     
