@@ -133,6 +133,7 @@ def m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig):
 # Script to run
 #################################################
 if __name__=="__main__":
+    start = time.time()
     dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
     workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
     fiberconfigname = "data/Mg_wide_r.txt"
@@ -164,7 +165,7 @@ if __name__=="__main__":
     m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig)
     ## Use features to fit Xccd,Yccd(obj, order, lambda)
     m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig)
-
+    
     # M2FS profile
     # Fit g(obj, order, lambda)
     
@@ -175,3 +176,4 @@ if __name__=="__main__":
     
     # M2FS skysub
     
+    print("Total time: {:.1f}".format(time.time()-start))

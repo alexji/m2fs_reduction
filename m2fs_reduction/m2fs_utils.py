@@ -828,78 +828,86 @@ def m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources, ma
     data.write(os.path.join(workdir, name+"_wavecal_id.txt"), format="ascii", overwrite=True)
     
 
-def make_wavecal_feature_matrix(ycen,iobj,iord,wave,
-                                Nobj,trueord,wavemin,wavemax,
-                                ycenmin,ycenmax,deg):
+def make_wavecal_feature_matrix(iobj,iord,X,Y,
+                                Nobj,trueord,
+                                Xmin,Xmax,
+                                Ymin,Ymax,
+                                deg):
     """
     Convert identified features into a feature matrix.
     
     Parameterization:
-    X = fX(ycen, nord, nord*wave) + X0(iobj)
-    Y = fY(ycen, nord, nord*wave) + Y0(iobj)
-    fX and fY are 3D legendre polynomials, X0 and Y0 are offsets for each object.
+    lambda = fL(nord, X, Y) + L0(iobj)
+    <Y> = fY(nord, X, Y) + <Y0>(iobj)
+    fL and fY are 3D legendre polynomials, X0 and Y0 are offsets for each object.
     
     First 4 variables are for each identified feature in the arc:
-    ycen = y-coordinate of object trace at center of image (X=1024)
-           needs to be the same order for every object
     iobj = object number of the feature, from 0 to Nobj-1
-           (note ycen and iobj are paired 1-1, but we need both values here)
     iord = index of feature order number (into trueord to get actual nord)
            from 0 to len(trueord)-1
-    wave = wavelength of feature
+    X = pixel X
+    Y = pixel Y at reference location (for a given iobj)
     
     Next variables are used for normalization.
     Nobj: total number of objects
     trueord: map from iord to nord
-    wavemin, wavemax: used to standardize wave from -1 to 1
-    ycenmin, ycenmax: used to standardize ycen from -1 to 1
+    Xmin, Xmax, Ymin, Ymax: used to standardize X and Y from -1 to 1
     
     degree is a 3-length tuple/list of integers, passed to np.polynomial.legendre.legvander3d
-
+    
     Note: IRAF ecidentify describes the basic functional form of order number.
     Let yord = offset +/- iord (to get the true order number)
     Then fit lambda = f(x, yord)/yord
     This means that wave -> wave*yord is a better variable to fit when determining x
     """
-    try: N1 = len(ycen)
+    try: N1 = len(iobj)
     except TypeError: N1 = 1
     try: N2 = len(iord)
     except TypeError: N2 = 1
-    try: N3 = len(wave)
+    try: N3 = len(X)
     except TypeError: N3 = 1
-    N = np.max([N1,N2,N3])
+    try: N4 = len(Y)
+    except TypeError: N4 = 1
+    N = np.max([N1,N2,N3,N4])
     
-    if N1 == 1: ycen = np.full(N, ycen)
+    if N1 == 1: iobj = np.full(N, iobj)
     if N2 == 1: iord = np.full(N, iord)
-    if N3 == 1: wave = np.full(N, wave)
+    if N3 == 1: X = np.full(N, X)
+    if N4 == 1: Y = np.full(N, Y)
     
-    def center(x,xmin=None,xmax=None):
+    #try: NXmins = len(Xmins)
+    #except TypeError: NXmins = np.full(Xmins, len(trueord))
+    #else: assert len(Xmins)==len(trueord)
+    #try: NXmaxs = len(Xmaxs)
+    #except TypeError: NXmaxs = np.full(Xmaxs, len(trueord))
+    #else: assert len(Xmaxs)==len(trueord)
+    
+    def center(x,xmin,xmax):
         """ Make x go from -1 to 1 """
         x = np.array(x)
-        if xmin is None: xmin = np.nanmin(x)
-        else: assert np.all(np.logical_or(x >= xmin, np.isnan(x)))
-        if xmax is None: xmax = np.nanmax(x)
-        else: assert np.all(np.logical_or(x <= xmax, np.isnan(x)))
+        assert np.all(np.logical_or(x >= xmin, np.isnan(x)))
+        assert np.all(np.logical_or(x <= xmax, np.isnan(x)))
         xmean = (xmax+xmin)/2.
         xdiff = (xmax-xmin)/2.
         return (x - xmean)/xdiff
     
     # Normalize coordinates to -1, 1
-    ycennorm = center(ycen,ycenmin,ycenmax)
+    Xn = center(X, Xmin, Xmax)
+    Yn = center(Y, Ymin, Ymax)
     
     # Normalize order number to -1, 1
     cord = np.array(trueord)[iord]
     cordmin, cordmax = np.min(trueord), np.max(trueord)
     cordnorm = center(cord,cordmin,cordmax)
     
-    # Convert wave -> wave * cord
-    waveord = cord * wave
-    waveordmin = wavemin * np.min(trueord)
-    waveordmax = wavemax * np.max(trueord)
-    waveordnorm = center(waveord, waveordmin, waveordmax)
+    ## Convert wave -> wave * cord
+    #waveord = cord * wave
+    #waveordmin = wavemin * np.min(trueord)
+    #waveordmax = wavemax * np.max(trueord)
+    #waveordnorm = center(waveord, waveordmin, waveordmax)
     
     # Legendre(ycen, nord, wave*nord, degrees)
-    legpolymat = np.polynomial.legendre.legvander3d(ycennorm, cordnorm, waveordnorm, deg)
+    legpolymat = np.polynomial.legendre.legvander3d(Xn, Yn, cordnorm, deg)
     legpolymat = legpolymat[:,1:] # Get rid of the constant offset here
     # Add a constant offset for each object with indicator variables
     indicatorpolymat = np.zeros((len(legpolymat), Nobj))
@@ -915,7 +923,11 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
     sigma = 3.
     ycenmin = 0.
     ycenmax = 2055.
-    deg = [3,3,5]
+    deg = [3,4,6]
+    Xmin,Xmax = 0., 2048-1.
+    #Xmins = [700, 0, 0, 0]
+    #Xmaxs = [2047, 2047, 2047, 1300]
+    Ymin,Ymax = 0., 2056-1.
     
     ## Load identified wavelength features
     name = os.path.basename(fname)[:-5]
@@ -924,15 +936,14 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
     print("Fitting wavelength solution for {} ({} features)".format(fname, len(data)))
     
     ## TODO GET ALL THESE FROM FIBERCONFIG
-    wavemin, wavemax = 5100., 5450.
     Nobj, Norder, trueord = fiberconfig[0], fiberconfig[1], fiberconfig[2]
-    
-    ## Construct feature matrix to fit
-    Xmat = make_wavecal_feature_matrix(data["Ycen"],data["iobj"],data["iorder"],data["L"], 
-                                       Nobj, trueord, wavemin, wavemax,
-                                       ycenmin, ycenmax, deg)
+     
+   ## Construct feature matrix to fit
+    Xmat = make_wavecal_feature_matrix(data["iobj"],data["iorder"],data["X"],data["Ycen"],
+                                       Nobj, trueord, Xmin, Xmax, Ymin, Ymax, deg)
     good = np.ones(len(Xmat), dtype=bool)
-    ymat = np.vstack([data["X"],data["Y"]]).T
+    ymat = np.vstack([data["L"],data["Y"]]).T
+    
     ## Solve for fit with all features
     pfit, residues, rank, svals = linalg.lstsq(Xmat, ymat)
     
@@ -992,23 +1003,25 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
                 iiobjorder = np.logical_and(data["iobj"]==iobj,
                                             data["iorder"]==iorder)
                 iiobjorderused = np.logical_and(iiobjorder, good)
-                Lall = data["L"][iiobjorder]
-                Xall = data["X"][iiobjorder]-yfitall[iiobjorder,0]
+                Lall = data["L"][iiobjorder]-yfitall[iiobjorder,0]
+                Xall = data["X"][iiobjorder]
                 Yall = data["Y"][iiobjorder]-yfitall[iiobjorder,1]
                 Nall = len(Lall)
-                Luse = data["L"][iiobjorderused]
-                Xuse = data["X"][iiobjorderused]-yfitall[iiobjorderused,0]
+                Luse = data["L"][iiobjorderused]-yfitall[iiobjorderused,0]
+                Xuse = data["X"][iiobjorderused]
                 Yuse = data["Y"][iiobjorderused]-yfitall[iiobjorderused,1]
                 Nuse = len(Luse)
                 ax.axhline(0,color='k',linestyle=':')
                 ax.set_ylim(-1,1)
-                l, = ax.plot(Lall, Xall, '.')
-                ax.plot(Luse, Xuse, 'o', color=l.get_color())
-                l, = ax.plot(Lall, Yall, '.')
-                ax.plot(Luse, Yuse, 'o', color=l.get_color())
-                Xrms = np.std(Xuse)
+                l, = ax.plot(Xall, Lall, '.')
+                ax.plot(Xuse, Luse, 'o', color=l.get_color())
+                l, = ax.plot(Xall, Yall, '.')
+                ax.plot(Xuse, Yuse, 'o', color=l.get_color())
+                Lrms = np.std(Luse)
                 Yrms = np.std(Yuse)
-                ax.set_title("N={}, used={} Xstd={:.2f} Ystd={:.2f}".format(
-                        Nall,Nuse,Xrms,Yrms))
+                ax.set_title("N={}, used={} Lstd={:.3f} Ystd={:.2f}".format(
+                        Nall,Nuse,Lrms,Yrms))
         fig.savefig(figfname, bbox_inches="tight")
         plt.close(fig)
+        
+        
