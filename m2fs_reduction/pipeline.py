@@ -73,6 +73,9 @@ def m2fs_traceflat(dbname, workdir, fiberconfig):
     
     m2fs_trace_orders(masterflatname, fiberconfig, make_plot=True)
     
+    for fname in fnames:
+        m2fs_trace_orders(fname, fiberconfig, make_plot=True)
+
     mark_finished(workdir, "traceflat")
 
 def m2fs_wavecal_find_sources(dbname, workdir):

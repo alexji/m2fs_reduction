@@ -589,7 +589,7 @@ def m2fs_load_tracestd_function(flatname, fiberconfig):
     return tracestd_func
     
 def m2fs_trace_orders(fname, fiberconfig,
-                      nthresh=2.0, ystart=0, dx=20, dy=5, nstep=10, degree=4, ythresh=500,
+                      nthresh=2.0, ystart=0, dx=20, dy=5, nstep=10, degree=5, ythresh=500,
                       make_plot=True):
     """
     Order tracing by fitting. Adapted from Terese Hansen
@@ -655,10 +655,15 @@ def m2fs_trace_orders(fname, fiberconfig,
                (data[j,int(ypeak[j-nstep,i])] <= ythresh):
                 break
             if np.max(auxy) >= auxthresh:
-                coef = gaussfit(auxx, auxy, [auxdata0[int(ypeak[j-nstep,i])], ypeak[j-nstep,i], 2, thresh/2.],
-                                xtol=1e-6,maxfev=10000)
-                ypeak[j,i] = coef[1]
-                ystdv[j,i] = min(coef[2],dy/2.)
+                try:
+                    coef = gaussfit(auxx, auxy, [auxdata0[int(ypeak[j-nstep,i])], ypeak[j-nstep,i], 2, thresh/2.],
+                                    xtol=1e-6,maxfev=10000)
+                    ypeak[j,i] = coef[1]
+                    ystdv[j,i] = min(coef[2],dy/2.)
+                except RuntimeError:
+                    ypeak[j,i] = ypeak[j-nstep,i] # so i don't get lost
+                    ystdv[j,i] = ystdv[j-nstep,i]
+                    nopeak[j,i] = 1
             else:
                 ypeak[j,i] = ypeak[j-nstep,i] # so i don't get lost
                 ystdv[j,i] = ystdv[j-nstep,i]
@@ -681,10 +686,15 @@ def m2fs_trace_orders(fname, fiberconfig,
                (data[j,int(ypeak[j+nstep,i])] <= ythresh):
                 break
             if np.max(auxy) >= auxthresh:
-                coef = gaussfit(auxx, auxy, [auxdata0[int(ypeak[j+nstep,i])], ypeak[j+nstep,i], 2, thresh/2.],
-                                xtol=1e-6,maxfev=10000)
-                ypeak[j,i] = coef[1]
-                ystdv[j,i] = min(coef[2], dy/2.)
+                try:
+                    coef = gaussfit(auxx, auxy, [auxdata0[int(ypeak[j+nstep,i])], ypeak[j+nstep,i], 2, thresh/2.],
+                                    xtol=1e-6,maxfev=10000)
+                    ypeak[j,i] = coef[1]
+                    ystdv[j,i] = min(coef[2], dy/2.)
+                except RuntimeError:
+                    ypeak[j,i] = ypeak[j+nstep,i] # so i don't get lost
+                    ystdv[j,i] = ystdv[j+nstep,i]
+                    nopeak[j,i] = 1
             else:
                 ypeak[j,i] = ypeak[j+nstep,i] # so i don't get lost
                 ystdv[j,i] = ystdv[j+nstep,i]
@@ -698,9 +708,11 @@ def m2fs_trace_orders(fname, fiberconfig,
     for i in range(npeak):
         sel = np.isfinite(ypeak[:,i]) #np.where(ypeak[:,i] != -666)[0]
         xarr_fit = np.arange(nx)[sel]
-        auxcoeff = np.polyfit(xarr_fit, ypeak[sel,i], degree)
+        #auxcoeff = np.polyfit(xarr_fit, ypeak[sel,i], degree)
+        _, auxcoeff = jds_poly_reject(xarr_fit, ypeak[sel,i], degree, 5, 5)
         coeff[:,i] = auxcoeff
-        auxcoeff2 = np.polyfit(xarr_fit, ystdv[sel,i], degree)
+        #auxcoeff2 = np.polyfit(xarr_fit, ystdv[sel,i], degree)
+        _, auxcoeff2 = jds_poly_reject(xarr_fit, ystdv[sel,i], degree, 5, 5)
         coeff2[:,i] = auxcoeff2
 
     fname1, fname2 = m2fs_get_trace_fnames(fname)
@@ -723,7 +735,11 @@ def m2fs_trace_orders(fname, fiberconfig,
                 yarr = tracefn(i,j,xarr)
                 eyarr = trstdfn(i,j,xarr)
                 ax.plot(xarr, yarr, color='orange', lw=.5)
-                ax.errorbar(xarr[::nstep], yarr[::nstep], yerr=eyarr[::nstep], fmt='r.', ms=1., elinewidth=.5)
+                #ax.errorbar(xarr[::nstep], yarr[::nstep], yerr=eyarr[::nstep], fmt='r.', ms=1., elinewidth=.5)
+                ipeak = i*Norders + j
+                finite = np.isfinite(ypeak[:,ipeak])
+                ax.errorbar(xarr[finite], yarr[finite], yerr=eyarr[finite], fmt='r.', ms=1., elinewidth=1)
+                ax.errorbar(xarr, ypeak[:,ipeak], yerr=ystdv[:,ipeak], fmt='co', ms=1, elinewidth=.5, ecolor='c')
         fig.savefig("{}/{}_trace.png".format(
                 os.path.dirname(fname), os.path.basename(fname)[:-5]),
                     dpi=300,bbox_inches="tight")
@@ -939,10 +955,11 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
     Nobj, Norder, trueord = fiberconfig[0], fiberconfig[1], fiberconfig[2]
      
    ## Construct feature matrix to fit
-    Xmat = make_wavecal_feature_matrix(data["iobj"],data["iorder"],data["X"],data["Ycen"],
+    Xmat = make_wavecal_feature_matrix(data["iobj"],data["iorder"],data["X"],data["Y"],
                                        Nobj, trueord, Xmin, Xmax, Ymin, Ymax, deg)
     good = np.ones(len(Xmat), dtype=bool)
-    ymat = np.vstack([data["L"],data["Y"]]).T
+    #ymat = np.vstack([data["L"],data["Y"]]).T
+    ymat = data["L"][:,np.newaxis]
     
     ## Solve for fit with all features
     pfit, residues, rank, svals = linalg.lstsq(Xmat, ymat)
@@ -954,7 +971,8 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
         ## I decided to do it this way for easier interpretability, rather than
         ## a global sigma-clip rejection
         yfitall = Xmat.dot(pfit)
-        dX, dY = (ymat - yfitall).T
+        #dX, dY = (ymat - yfitall).T
+        dX, = (ymat - yfitall).T
         to_clip = np.zeros(len(Xmat), dtype=bool)
         for iobj in range(Nobj):
             for iorder in range(Norder):
@@ -967,18 +985,29 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
                 # TODO: add back lines if less
                 
                 ## Find outliers and sigma clip them
-                tdX, tdY = dX[iiobjorderused], dY[iiobjorderused]
+                #tdX, tdY = dX[iiobjorderused], dY[iiobjorderused]
+                #dXcen, dXstd = biweight_location(tdX), biweight_scale(tdX)
+                #dYcen, dYstd = biweight_location(tdY), biweight_scale(tdY)
+                #
+                #to_clip_X = np.logical_and(iiobjorderused, np.abs((dX-dXcen)/dXstd) > sigma)
+                #to_clip_Y = np.logical_and(iiobjorderused, np.abs((dY-dYcen)/dYstd) > sigma)
+                #if np.sum(iiobjorderused) - np.sum(to_clip_X | to_clip_Y) < min_lines_per_order:
+                #    print("    Could not clip {}/{} features from obj {} order {}".format(
+                #            np.sum(to_clip_X | to_clip_Y), np.sum(iiobjorderused), iobj, iorder))
+                #    continue
+                #else:
+                #    to_clip = np.logical_or(to_clip, np.logical_or(to_clip_X, to_clip_Y))
+                
+                tdX = dX[iiobjorderused]
                 dXcen, dXstd = biweight_location(tdX), biweight_scale(tdX)
-                dYcen, dYstd = biweight_location(tdY), biweight_scale(tdY)
                 
                 to_clip_X = np.logical_and(iiobjorderused, np.abs((dX-dXcen)/dXstd) > sigma)
-                to_clip_Y = np.logical_and(iiobjorderused, np.abs((dY-dYcen)/dYstd) > sigma)
-                if np.sum(iiobjorderused) - np.sum(to_clip_X | to_clip_Y) < min_lines_per_order:
+                if np.sum(iiobjorderused) - np.sum(to_clip_X) < min_lines_per_order:
                     print("    Could not clip {}/{} features from obj {} order {}".format(
-                            np.sum(to_clip_X | to_clip_Y), np.sum(iiobjorderused), iobj, iorder))
+                            np.sum(to_clip_X), np.sum(iiobjorderused), iobj, iorder))
                     continue
                 else:
-                    to_clip = np.logical_or(to_clip, np.logical_or(to_clip_X, to_clip_Y))
+                    to_clip = np.logical_or(to_clip, to_clip_X)
                 
         good = np.logical_and(good, np.logical_not(to_clip))
         print("  Cut down to {} features".format(np.sum(good)))
@@ -989,8 +1018,20 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
         tymat = ymat[good]
         pfit, residues, rank, svals = linalg.lstsq(tXmat, tymat)
     
+    ## Calculate the RMSs
+    yfitall = Xmat.dot(pfit)
+    Lrmsarr = np.zeros((Nobj,Norder))
+    for iobj in range(Nobj):
+        for iorder in range(Norder):
+            iiobjorder = np.logical_and(data["iobj"]==iobj,
+                                        data["iorder"]==iorder)
+            iiobjorderused = np.logical_and(iiobjorder, good)
+            Luse = data["L"][iiobjorderused]-yfitall[iiobjorderused,0]
+            Xuse = data["X"][iiobjorderused]
+            Lrmsarr[iobj,iorder] = np.std(Luse)
     ## Information to save:
-    np.save(outfname, [pfit, good, Xmat, data["iobj"], data["iorder"], trueord, Nobj, maxiter, deg, sigma])
+    np.save(outfname, [pfit, good, Xmat, data["iobj"], data["iorder"], trueord, Nobj, maxiter, deg, sigma, Lrmsarr,
+                       (Xmin,Xmax), (Ymin,Ymax)])
     
     if make_plot:
         import matplotlib.pyplot as plt
@@ -1005,23 +1046,82 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
                 iiobjorderused = np.logical_and(iiobjorder, good)
                 Lall = data["L"][iiobjorder]-yfitall[iiobjorder,0]
                 Xall = data["X"][iiobjorder]
-                Yall = data["Y"][iiobjorder]-yfitall[iiobjorder,1]
+                #Yall = data["Y"][iiobjorder]-yfitall[iiobjorder,1]
                 Nall = len(Lall)
                 Luse = data["L"][iiobjorderused]-yfitall[iiobjorderused,0]
                 Xuse = data["X"][iiobjorderused]
-                Yuse = data["Y"][iiobjorderused]-yfitall[iiobjorderused,1]
+                #Yuse = data["Y"][iiobjorderused]-yfitall[iiobjorderused,1]
                 Nuse = len(Luse)
                 ax.axhline(0,color='k',linestyle=':')
                 ax.set_ylim(-1,1)
                 l, = ax.plot(Xall, Lall, '.')
                 ax.plot(Xuse, Luse, 'o', color=l.get_color())
-                l, = ax.plot(Xall, Yall, '.')
-                ax.plot(Xuse, Yuse, 'o', color=l.get_color())
+                #l, = ax.plot(Xall, Yall, '.')
+                #ax.plot(Xuse, Yuse, 'o', color=l.get_color())
                 Lrms = np.std(Luse)
-                Yrms = np.std(Yuse)
-                ax.set_title("N={}, used={} Lstd={:.3f} Ystd={:.2f}".format(
-                        Nall,Nuse,Lrms,Yrms))
+                #Yrms = np.std(Yuse)
+                #ax.set_title("N={}, used={} Lstd={:.3f} Ystd={:.2f}".format(
+                #        Nall,Nuse,Lrms,Yrms))
+                ax.set_title("N={}, used={} Lstd={:.3f}".format(
+                        Nall,Nuse,Lrms))
         fig.savefig(figfname, bbox_inches="tight")
         plt.close(fig)
+
+        figfname = os.path.join(workdir, name+"_wavecal_Lrmshist.png")
+        fig, axes = plt.subplots(2,2, figsize=(12,12))
+        axes[0,0].hist(np.ravel(Lrmsarr), bins="auto")
+        axes[0,0].set_xlabel("Lrms")
+        axes[0,0].set_ylabel("N")
+
+        for iobj in range(Nobj):
+            axes[0,1].plot(trueord, Lrmsarr[iobj,:], "o-")
+        axes[0,1].set_xlabel("Order")
+        axes[0,1].set_ylabel("Lrms")
+
+        for iord in range(Norder):
+            axes[1,1].plot(np.arange(Nobj), Lrmsarr[:,iord], "o-")
+        axes[1,1].set_xlabel("Object")
+        axes[1,1].set_ylabel("Lrms")
         
-        
+        ax = axes[1,0]
+        for iobj in range(Nobj):
+            for iord in range(Norder):
+                Ycen = np.unique(data["Ycen"][np.logical_and(data["iobj"]==iobj, data["iorder"]==iord)])[0]
+                Xarr = np.arange(Xmin,Xmax)
+                Xmat = make_wavecal_feature_matrix(iobj, iord, Xarr, Ycen,
+                                                   Nobj, trueord, Xmin, Xmax, Ymin, Ymax, deg)
+                Lfit = Xmat.dot(pfit)
+                ax.plot(Xarr, Lfit)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Lambda")
+        fig.savefig(figfname, bbox_inches="tight")
+        plt.close(fig)
+
+def m2fs_get_pixel_functions(flatfname, arcfname, fiberconfig):
+    """
+    Get the functions Lambda(iobj, iord, X, Y) and ys(iobj, iord, X, Y)
+
+    For each iobj and iord:
+    ys(X, Y) = (Y - <y>(X))/(<std_y>(X))
+      where <y> and <std_y> were determined while tracing the flat
+    Lambda(X, Y) = f(iobj, iord, X, Y) = constant(iobj) + LegPoly(iord, X, Y)
+      is determined from the arc
+    """
+    
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    trstdfn = m2fs_load_tracestd_function(flatfname, fiberconfig)
+    def ys(iobj, iord, X, Y):
+        yarr = tracefn(iobj,iord,X)
+        sarr = trstdfn(iobj,iord,X)
+        return (Y-yarr)/(sarr)
+    
+    workdir = os.path.dirname(arcfname)
+    name = os.path.basename(arcfname)[:-5]
+    fitdata = np.load(os.path.join(workdir, name+"_wavecal_fitdata.npy"))
+    pfit, trueord, Nobj, deg, (Xmin, Xmax), (Ymin,Ymax) = [fitdata[i] for i in [0, 5, 6, 8, 11, 12]]
+    def flambda(iobj, iord, X, Y):
+        Xmat = make_wavecal_feature_matrix(iobj, iord, X, Y,
+                                           Nobj, trueord, Xmin, Xmax, Ymin, Ymax, deg)
+        return Xmat.dot(pfit)
+    
+    return ys, flambda
