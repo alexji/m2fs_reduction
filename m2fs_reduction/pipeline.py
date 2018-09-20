@@ -153,6 +153,12 @@ if __name__=="__main__":
     assert len(np.unique(tab["BIN"])) == 1, np.unique(tab["BIN"])
     assert len(np.unique(tab["SPEED"])) == 1, np.unique(tab["SPEED"])
     assert len(np.unique(tab["NAMP"])) == 1, np.unique(tab["NAMP"])
+    arctab = tab[tab["EXPTYPE"]=="Comp"]
+    flattab= tab[tab["EXPTYPE"]=="Flat"]
+    objtab = tab[tab["EXPTYPE"]=="Object"]
+    arcnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    flatnames= [get_file(x, workdir, "d") for x in flattab["FILE"]]
+    objnames = [get_file(x, workdir, "d") for x in objtab["FILE"]]
     
     fiberconfig = m2fs_parse_fiberconfig(fiberconfigname)
     

@@ -1120,8 +1120,19 @@ def m2fs_get_pixel_functions(flatfname, arcfname, fiberconfig):
     fitdata = np.load(os.path.join(workdir, name+"_wavecal_fitdata.npy"))
     pfit, trueord, Nobj, deg, (Xmin, Xmax), (Ymin,Ymax) = [fitdata[i] for i in [0, 5, 6, 8, 11, 12]]
     def flambda(iobj, iord, X, Y):
+        twodim = len(X.shape)==2
+        
+        if twodim:
+            assert np.all(X.shape == Y.shape)
+            shape = X.shape
+            X = np.ravel(X)
+            Y = np.ravel(Y)
         Xmat = make_wavecal_feature_matrix(iobj, iord, X, Y,
                                            Nobj, trueord, Xmin, Xmax, Ymin, Ymax, deg)
-        return Xmat.dot(pfit)
-    
+        
+        out = Xmat.dot(pfit)
+        if twodim:
+            return out.reshape(shape)
+        else:
+            return out
     return ys, flambda
