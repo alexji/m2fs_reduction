@@ -12,6 +12,7 @@ from m2fs_utils import m2fs_make_master_flat, m2fs_trace_orders
 from m2fs_utils import m2fs_wavecal_find_sources_one_arc
 from m2fs_utils import m2fs_wavecal_identify_sources_one_arc
 from m2fs_utils import m2fs_wavecal_fit_solution_one_arc
+from m2fs_utils import m2fs_get_pixel_functions
 
 #################################################
 # Tools to see if you have already done a step
@@ -176,8 +177,68 @@ if __name__=="__main__":
     m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig)
     
     # M2FS profile
-    # Fit g(obj, order, lambda)
+    ysfunc, Lfunc = m2fs_get_pixel_functions(flatnames[-1],arcnames[-1],fiberconfig)
+    R, eR, header = read_fits_two(flatnames[-1])
+    shape = R.shape
+    X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
+    deg = [5, 5]
+    iobj, iord = 0, 0
     
+    from m2fs_utils import fit_ghlb
+    alloutput = []
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    used = np.zeros_like(R)
+    modeled_flat = np.zeros_like(R)
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            itrace = iord + iobj*Norder + 1
+            
+            #import m2fs_utils
+            #yscut = 10.0
+            #ys = ysfunc(iobj, iord, X, Y)
+            ### Get arrays of relevant pixels
+            #Yarr, eYarr, indices = m2fs_utils.make_ghlb_y_matrix(iobj, iord, ys, R, eR, yscut=yscut)
+            #this_X = X[indices]
+            #Xmin, Xmax = fiberconfig[4][iord]
+            #iiXcut = (Xmin <= this_X) & (this_X <= Xmax)
+            #indices = tuple([ix[iiXcut] for ix in indices])
+            #Yarr, eYarr = Yarr[iiXcut], eYarr[iiXcut]
+            #ys = ys[indices]
+            ##ys = ys[indices]
+            ### Evaluate L
+            #L = Lfunc(iobj, iord, np.ravel(X[indices]), np.ravel(Y[indices]))
+            ### Compute S'(L)
+            #Sprimefunc = fit_Sprime(ys, L, Yarr, eYarr, 2048)
+            
+            output = fit_ghlb(iobj, iord, fiberconfig,
+                              X, Y, R, eR,
+                              ysfunc, Lfunc, deg,
+                              yscut = 1.0, maxiter = 10, sigma = 5.0)
+            pfit, yfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc = output
+            alloutput.append(output)
+            used[indices] = used[indices] + 1
+            modeled_flat[indices] = yfit
+            break
+        break
+    
+def tmp():
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.imshow(used.T, origin="lower")
+    plt.title("Locations to model")
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(modeled_flat.T, origin="lower")
+    plt.title("Model")
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow((R - modeled_flat).T, origin="lower")
+    plt.colorbar()
+    plt.title("Data - model")
+    
+    plt.show()
     # M2FS extract
     # Associate arcs and flats to data
     # Forward Model Flux(obj,order,lambda)

@@ -5,7 +5,7 @@ import numpy as np
 from astropy.io import ascii, fits
 from astropy.table import Table
 from astropy.stats import biweight_location, biweight_scale
-from scipy import optimize, ndimage, spatial, linalg
+from scipy import optimize, ndimage, spatial, linalg, special, interpolate
 import re
 import glob, os, sys, time, subprocess
 
@@ -540,11 +540,17 @@ def m2fs_parse_fiberconfig(fname):
             wl1, wl2 = list(map(float, fp.readline().strip().split()))
             ordwaveranges.append([wl1,wl2])
         
+        # Next Nord lines: Xmin, Xmax
+        ordpixranges = []
+        for j in range(Nord):
+            X1, X2 = list(map(int, fp.readline().strip().split()))
+            ordpixranges.append([X1, X2])
+        
         # All other order lines are tetris and fiber info
         lines = fp.readlines()
     lines = list(map(lambda x: x.strip().split(), lines))
     lines = Table(rows=lines, names=["tetris","fiber"])
-    return Nobj, Nord, ordlist, ordwaveranges, lines
+    return Nobj, Nord, ordlist, ordwaveranges, ordpixranges, lines
 
 def m2fs_get_trace_fnames(fname):
     assert fname.endswith(".fits")
@@ -1134,5 +1140,137 @@ def m2fs_get_pixel_functions(flatfname, arcfname, fiberconfig):
         if twodim:
             return out.reshape(shape)
         else:
-            return out
+            return np.ravel(out)
     return ys, flambda
+
+
+def make_ghlb_y_matrix(iobj, iord, ys, R, eR,
+                       yscut = 4.0):
+    """
+    Get data, errors, good mask, indices of original array
+    Cut on |ys| < yscut to make the matrix managable in size
+    """
+    assert ys.shape == R.shape, (ys.shape, R.shape)
+    assert ys.shape == eR.shape, (ys.shape, R.shape)
+    indices = np.where(np.abs(ys) < yscut)
+    Rout = np.ravel(R[indices])
+    eRout = np.ravel(eR[indices])
+    return Rout, eRout, indices
+def make_ghlb_feature_matrix(iobj, iord, L, ys, Yprime,
+                             fiberconfig, deg):
+    """
+    Create GHLB feature matrix
+    Legendre in wavelength (use fiberconfig and iord to get L limits)
+    Gauss-Hermite in ys
+    MIKE uses deg=[2,10]
+    """
+    degL, degH = deg
+    NL, NH = degL+1, degH+1
+    Nparam = NL*NH
+    L = np.ravel(L)
+    ys = np.ravel(ys)
+    assert len(L)==len(ys)
+    assert len(L)==len(Yprime)
+    N = len(L)
+    
+    ## Normalize wavelengths
+    Lmin, Lmax = fiberconfig[3][iord]
+    Lcen = (Lmax+Lmin)/2.
+    Lwid = (Lmax-Lmin)/2.
+    Ln = (L-Lcen)/Lwid
+    ## Construct features: legendre x gauss-hermite
+    La = [special.eval_legendre(a, Ln)*Yprime for a in range(NL)]
+    expys = np.exp(-ys**2/2.)
+    Hb = [special.eval_hermitenorm(b, ys)*expys for b in range(NH)]
+    polygrid = np.zeros((N,Nparam))
+    for a in range(NL):
+        for b in range(NH):
+            polygrid[:,b+a*NH] = La[a]*Hb[b]
+    return polygrid
+def fit_Sprime(ys, L, Y, eY, Npix, maxiter=5, sigma=5.):
+    Pprime = np.exp(-ys**2/2.)
+    Yprime = Y/Pprime
+    Wprime = (Pprime/eY)**2. # inverse variance of Yprime
+    Lmin, Lmax = L.min(), L.max()
+    # fit B spline
+    knots = np.linspace(Lmin, Lmax, Npix)[1:-1] # LSQ adds end knots
+    #for i in range(len(knots)-1):
+    #    t1,t2 = knots[i], knots[i+1]
+    #    if np.sum((t1 < L) & (L < t2)) == 0:
+    #        print("Oh no at ",i)
+    iisort = np.argsort(L)
+    Lsort = L[iisort]
+    Yprimesort = Yprime[iisort]
+    Wprimesort = Wprime[iisort]
+    Sprimefunc = interpolate.LSQUnivariateSpline(Lsort, Yprimesort, knots, Wprimesort)
+    #mask = np.zeros_like(Lsort)
+    #for iter in range(maxiter):
+    #    stdev = biweight_scale(
+    return Sprimefunc
+    
+def fit_ghlb(iobj, iord, fiberconfig,
+             X, Y, R, eR,
+             ysfunc, Lfunc, deg,
+             yscut = 4.0, maxiter = 10, sigma = 5.0):
+    """
+    Iteratively fit GHLB with outlier rejection (using biweight_scale)
+    Input: iobj, iord, fiberconfig
+           X (x-pixels), Y (y-pixels), R (data image), eR (error image)
+           ysfunc, Lfunc (from m2fs_get_pixel_functions)
+           deg (Legendre degree, Hermite degree)
+           yscut (sets pixels to use for fitting |ys| < yscut)
+           maxiter, sigma (sigma clipping)
+    Returns pfit, yfit, TODO
+    
+    Algorithm:
+    1) Determine approximate spectrum S'(L) by assuming a Gaussian profile
+       Fit a B-spline to the data.
+       (This is very similar to an unbinned Horne extraction with a Gaussian profile)
+    2) Fit GHLB parameters assuming S'(L)
+    3) Extract S(L) by fitting 
+    Return: 
+    """
+    assert len(deg)==2, deg
+
+    start = time.time()
+    ## Evaluate ys
+    ys = ysfunc(iobj, iord, X, Y)
+    ## Get arrays of relevant pixels
+    Yarr, eYarr, indices = make_ghlb_y_matrix(iobj, iord, ys, R, eR, yscut=yscut)
+    this_X = X[indices]
+    Xmin, Xmax = fiberconfig[4][iord]
+    iiXcut = (Xmin <= this_X) & (this_X <= Xmax)
+    indices = tuple([ix[iiXcut] for ix in indices])
+    Yarr, eYarr = Yarr[iiXcut], eYarr[iiXcut]
+    ys = ys[indices]
+    ## Evaluate L
+    L = Lfunc(iobj, iord, np.ravel(X[indices]), np.ravel(Y[indices]))
+
+    ## Compute S'(L)
+    Sprimefunc = fit_Sprime(ys, L, Yarr, eYarr, Xmax-Xmin+1)
+    Yprime = Sprimefunc(L)
+    
+    ## Create GHLB feature matrix TODO ADD S'
+    Xmat = make_ghlb_feature_matrix(iobj, iord, L, ys, Yprime,
+                                    fiberconfig, deg)
+    
+    ## Run weighted linear least squares
+    warr = 1./eYarr
+    wXarr = (Xmat.T*warr).T
+    wYarr = warr*Yarr
+    mask = np.zeros(len(Yarr), dtype=bool)
+    pfit, residues, rank, svals = linalg.lstsq(wXarr, wYarr)
+    yfit = Xmat.dot(pfit)
+    
+    ## Iteratively remove outliers and refit
+    for iter in range(maxiter):
+        dY = Yarr - yfit
+        stdev = biweight_scale(dY[~mask])
+        mask |= (np.abs(dY) > sigma * stdev)
+        pfit, residues, rank, svals = linalg.lstsq(wXarr[~mask], wYarr[~mask])
+        yfit = Xmat.dot(pfit)
+        print("  Iter {}: {}/{} pixels masked".format(iter+1, np.sum(mask), len(mask)))
+    print("Total time took {:.1f}s".format(time.time()-start))
+    
+    #return pfit, Xmat, L, ys, mask, indices
+    return pfit, yfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc, Yprime
