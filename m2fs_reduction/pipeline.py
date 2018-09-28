@@ -13,6 +13,7 @@ from m2fs_utils import m2fs_wavecal_find_sources_one_arc
 from m2fs_utils import m2fs_wavecal_identify_sources_one_arc
 from m2fs_utils import m2fs_wavecal_fit_solution_one_arc
 from m2fs_utils import m2fs_get_pixel_functions
+from m2fs_utils import m2fs_ghlb_extract
 
 #################################################
 # Tools to see if you have already done a step
@@ -133,8 +134,31 @@ def m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig):
     print("Fitting wavelength solutions took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "wavecal-fitsolution")
 
+def m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig):
+    if check_finished(workdir, "flat-ghlb"): return
+    
+    tab = ascii.read(dbname)
+    flattab = tab[tab["EXPTYPE"]=="Flat"]
+    print("Found {} flats".format(len(flattab)))
+    arctab = tab[tab["EXPTYPE"]=="Comp"]
+    ## HACK TODO need to do something about picking this, but for now....
+    arctab = arctab[arctab["EXPTIME"] < 30]
+    print("Found {} arcs".format(len(flattab)))
+    
+    #masterflatname = os.path.join(workdir, "master_flat.fits")
+    flatfnames = [get_file(x, workdir, "d") for x in flattab["FILE"]]
+    arcfnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    
+    start = time.time()
+    for flatfname, arcfname in zip(flatfnames, arcfnames):
+        m2fs_ghlb_extract(flatfname, flatfname, arcfname, fiberconfig,
+                          yscut=2.0, deg=[3,12], sigma=4.0,
+                          make_plot=True, make_obj_plots=True)
+    print("Fitting GHLB to flats took {:.1f}".format(time.time()-start))
+    mark_finished(workdir, "flat-ghlb")
+
 #################################################
-# Script to run
+# script to run
 #################################################
 if __name__=="__main__":
     start = time.time()
@@ -176,6 +200,14 @@ if __name__=="__main__":
     ## Use features to fit Xccd,Yccd(obj, order, lambda)
     m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig)
     
+    ### M2FS extract
+    ## Fit profile to flats
+    ## TODO input a file that associates objects, flats, and arcs
+    m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig)
+    ## TODO apply GHLB profiles to extract objects, including throughput correction
+    
+    
+def tmp():
     # M2FS profile
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatnames[-1],arcnames[-1],fiberconfig)
     #ysfunc, Lfunc = m2fs_get_pixel_functions(flatnames[-1],arcnames[-2],fiberconfig)
@@ -216,9 +248,9 @@ if __name__=="__main__":
             
             ax = axes[iord,0]
             ax.plot(L, Yarr, 'k,')
-            ax.plot(L, S, '.')
+            #ax.plot(L, S, ',')
             Lplot = np.arange(L.min(), L.max()+0.1, 0.1)
-            ax.plot(Lplot, Sfunc(Lplot), '-')
+            ax.plot(Lplot, Sfunc(Lplot), '-', lw=1)
             ax.set_xlabel("L"); ax.set_ylabel("S(L)")
             ax.set_title("iobj={} iord={}".format(iobj,iord))
             
@@ -249,7 +281,7 @@ if __name__=="__main__":
             ax.set_xlabel("L"); ax.set_ylabel("(R - Rfit)/eR")
             ax.set_ylim(-5,5)
             Nbad = np.sum(np.abs(resid) > 5)
-            ax.set_title("Leg={} GH={} chi2r={:.2f}".format(deg[0], deg[1], np.sum(resid)**2/len(resid)))
+            ax.set_title("Leg={} GH={} chi2r={:.2f}".format(deg[0], deg[1], np.sum(resid**2)/len(resid)))
             
             ax = axes[iord,3]
             ax.hist(resid, bins=np.arange(-5, 5.1,.1), normed=True, histtype='step')

@@ -9,6 +9,8 @@ from scipy import optimize, ndimage, spatial, linalg, special, interpolate
 import re
 import glob, os, sys, time, subprocess
 
+import matplotlib.pyplot as plt
+
 ##############
 # File I/O
 ##############
@@ -737,7 +739,6 @@ def m2fs_trace_orders(fname, fiberconfig,
     np.savetxt(fname2, coeff2.T)
     
     if make_plot:
-        import matplotlib.pyplot as plt
         ## Trace Image
         fig, ax = plt.subplots(figsize=(20,20))
         ax.imshow(data.T, origin="lower")
@@ -1068,7 +1069,6 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
                        (Xmin,Xmax), (Ymin,Ymax)])
     
     if make_plot:
-        import matplotlib.pyplot as plt
         yfitall = Xmat.dot(pfit)
         fig, axes = plt.subplots(Nobj,Norder, figsize=(Norder*4,Nobj*3))
         figfname = os.path.join(workdir, name+"_wavecal_fitdata.png")
@@ -1216,12 +1216,12 @@ def make_ghlb_feature_matrix(iobj, iord, L, ys, Sprime,
             polygrid[:,b+a*NH] = La[a]*Hb[b]
     return polygrid
 
-def fit_S_with_profile(P, L, R, eR, Npix):
+def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1):
     """ R(L,y) = S(L) * P(L,y) """
     RP = R/P
     W = (P/eR)**2.
     W = W/W.sum()
-    Lmin, Lmax = L.min(), L.max()
+    Lmin, Lmax = L.min()+dx, L.max()-dx
     knots = np.linspace(Lmin, Lmax, Npix)[1:-1] # LSQUnivariateSpline adds two end knots
     ## Fit B Spline
     iisort = np.argsort(L)
@@ -1245,15 +1245,14 @@ def fit_ghlb(iobj, iord, fiberconfig,
            deg (Legendre degree, Hermite degree)
            yscut (sets pixels to use for fitting |ys| < yscut)
            maxiter, sigma (sigma clipping)
-    Returns pfit, yfit, TODO
+    Returns TODO
     
     Algorithm:
-    1) Determine approximate spectrum S'(L) by assuming a Gaussian profile
-       Fit a B-spline to the data.
-       (This is very similar to an unbinned Horne extraction with a Gaussian profile)
-    2) Fit GHLB parameters assuming S'(L)
-    3) Extract S(L) by fitting 
-    Return: 
+    * Initialize S'(L), fit assuming a Gaussian spatial profile
+      * Initial guess uses |ys| < 1.0
+    * Iterate (up to maxiter1):
+      * Fit GHLB, iteratively rejecting cosmic rays with sigma (up to maxiter2)
+      * Extract S(L)
     """
     assert len(deg)==2, deg
     
@@ -1279,6 +1278,7 @@ def fit_ghlb(iobj, iord, fiberconfig,
     ## Iterate: compute GHLB, reextract S
     S = Sprime
     mask = np.zeros(len(Yarr), dtype=bool)
+    lastNmask1 = 0
     for iter in range(maxiter1):
         ## Create GHLB feature matrix
         Xmatprime = make_ghlb_feature_matrix(iobj, iord, L, ys, S,
@@ -1292,18 +1292,19 @@ def fit_ghlb(iobj, iord, fiberconfig,
         wYarr = warr*Yarr
         pfit, residues, rank, svals = linalg.lstsq(wXarr, wYarr)
         yfit = Xmatprime.dot(pfit)
-        lastNmask = np.sum(mask)
+        lastNmask2 = np.sum(mask)
         ## Iteratively remove outliers and refit
         for iter2 in range(maxiter2):
-            dY = Yarr - yfit
-            stdev = biweight_scale(dY[~mask])
-            mask |= (np.abs(dY) > sigma * stdev)
+            #dY = Yarr - yfit
+            #stdev = biweight_scale(dY[~mask])
+            normresid = (Yarr-yfit)/eYarr
+            mask |= (np.abs(normresid) > sigma) #(np.abs(dY) > sigma * stdev)
             #print("  Iter {}: {}/{} pixels masked".format(iter+1, np.sum(mask), len(mask)))
             pfit, residues, rank, svals = linalg.lstsq(wXarr[~mask], wYarr[~mask])
             yfit = Xmatprime.dot(pfit)
-        #    Nmask = np.sum(mask)
-        #    if lastNmask == Nmask: break
-        #    lastNmask = Nmask
+            Nmask = np.sum(mask)
+            if lastNmask2 == Nmask: break
+            lastNmask2 = Nmask
         
         ## Re-extract S
         Xmat = make_ghlb_feature_matrix(iobj, iord, L, ys, np.ones_like(L),
@@ -1312,7 +1313,116 @@ def fit_ghlb(iobj, iord, fiberconfig,
         Sfunc = fit_S_with_profile(Pfit, L, Yarr, eYarr, Npix)
         S = Sfunc(L)
         print("  Iter {}: {}/{} pixels masked".format(iter+1, np.sum(mask), len(mask)))
+        if lastNmask1 == Nmask: break
+        lastNmask1 = Nmask
         
-    #return pfit, Xmat, L, ys, mask, indices
     print("Total time took {:.1f}s".format(time.time()-start))
-    return pfit, yfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc, Sprime, Sfunc, S, Pfit
+    return pfit, yfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc, Sfunc, Pfit
+
+def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma,
+                      make_plot=True, make_obj_plots=True):
+    """
+    """
+    outdir = os.path.dirname(fname)
+    assert fname.endswith(".fits")
+    name = os.path.basename(fname)[:-5]
+    outfname1 = os.path.join(outdir,name+"_GHLB.npy")
+    outfname2 = os.path.join(outdir,name+"_specs.npy")
+    
+    ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
+    R, eR, header = read_fits_two(fname)
+    shape = R.shape
+    X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
+    
+    alloutput = []
+    used = np.zeros_like(R)
+    modeled_flat = np.zeros_like(R)
+    
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    Ntrace = Nobj*Norder
+    
+    start = time.time()
+    for iobj in range(Nobj):
+        if make_obj_plots: fig, axes = plt.subplots(Norder, 4, figsize=(4*4,4*Norder))
+        for iord in range(Norder):
+            print("iobj={} iord={}".format(iobj,iord))
+            itrace = iord + iobj*Norder
+            output = fit_ghlb(iobj, iord, fiberconfig,
+                              X, Y, R, eR,
+                              ysfunc, Lfunc, deg,
+                              pixel_spacing = 1,
+                              yscut = yscut, maxiter1=5, maxiter2=5, sigma = sigma)
+            pfit, Rfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc, Sfunc, Pfit = output
+            alloutput.append([pfit,Rfit,Yarr,eYarr,Xmat,L,ys,mask,indices,Sprimefunc,Sfunc,Pfit])
+            used[indices] = used[indices] + 1
+            modeled_flat[indices] += Rfit
+            
+            if make_obj_plots:
+                ax = axes[iord,0]
+                ax.plot(L, Yarr, 'k,')
+                Lplot = np.arange(L.min(), L.max()+0.1, 0.1)
+                ax.plot(Lplot, Sfunc(Lplot), '-', lw=1)
+                ax.set_xlabel("L"); ax.set_ylabel("S(L)")
+                ax.set_title("iobj={} iord={}".format(iobj,iord))
+                
+                ax = axes[iord,1]
+                ax.scatter(L,ys,c=Pfit, alpha=.1)
+                ax.set_xlabel("L"); ax.set_ylabel("ys")
+                ax.set_title("GHLB Profile")
+                
+                ax = axes[iord,2]
+                resid = (Yarr - Rfit)/eYarr
+                yslims = [0, 1, 2, np.inf]
+                markersizes = [6, 3, 2]
+                colors = ['r','orange','k']
+                absys = np.abs(ys)
+                for i in range(len(yslims)-1):
+                    ys1, ys2 = yslims[i], yslims[i+1]
+                    ii = np.logical_and(absys >= ys1, absys < ys2)
+                    ax.plot(L[ii], resid[ii], 'o', color=colors[i], ms=markersizes[i], alpha=.5, mew=0,
+                            label="{:.1f} < ys < {:.1f}".format(ys1,ys2))
+                #ax.scatter(L, resid, c=ys, vmin=-yscut, vmax=yscut, alpha=.2, cmap='coolwarm')
+                ax.axhline(0, color='r', ls=':')
+                ax.legend(fancybox=True)
+                ax.set_xlabel("L"); ax.set_ylabel("(R - Rfit)/eR")
+                ax.set_ylim(-5,5)
+                Nbad = np.sum(np.abs(resid) > 5)
+                ax.set_title("Leg={} GH={} chi2r={:.2f}".format(deg[0], deg[1], np.sum(resid**2)/len(resid)))
+                
+                ax = axes[iord,3]
+                ax.hist(resid, bins=np.arange(-5, 5.1,.1), normed=True, histtype='step')
+                xplot = np.linspace(-5,5,1000)
+                ax.plot(xplot, np.exp(-xplot**2/2.)/np.sqrt(2*np.pi), 'k')
+                ax.set_xlabel("(R - Rfit)/eR")
+                ax.set_title("{}/{} points outside limits".format(Nbad, len(resid)))
+        if make_obj_plots:
+            start2 = time.time()
+            fig.savefig("{}/{}_GHLB_Obj{:03}.png".format(outdir,name,iobj), bbox_inches="tight")
+            print("Saved figure: {:.1f}s".format(time.time()-start2))
+            plt.close(fig)
+    print("Finished huge fit: {:.1f}s".format(time.time()-start))
+    np.save(outfname1, [alloutput, used, modeled_flat])
+    ## TODO make outfname2, which is the extracted spectra evaluated at specific points
+    if make_plot:
+        fig = plt.figure(figsize=(8,8))
+        plt.imshow(used.T, origin="lower")
+        plt.title("Pixels used in model")
+        plt.colorbar(label="number times used")
+        fig.savefig(os.path.join(outdir,name+"_GHLB_used.png"))
+        plt.close(fig)
+        
+        fig = plt.figure(figsize=(8,8))
+        plt.imshow(modeled_flat.T, origin="lower")
+        plt.title("Model fit")
+        plt.colorbar()
+        fig.savefig(os.path.join(outdir,name+"_GHLB_fit.png"))
+        plt.close(fig)
+        
+        fig = plt.figure(figsize=(8,8))
+        plt.imshow((R - modeled_flat).T, origin="lower")
+        plt.colorbar()
+        plt.title("Data - model")
+        fig.savefig(os.path.join(outdir,name+"_GHLB_resid.png"))
+        plt.close(fig)
+    print("Total time: {:.1f}".format(time.time()-start))
+    
