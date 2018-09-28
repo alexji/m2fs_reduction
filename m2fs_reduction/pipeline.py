@@ -72,11 +72,11 @@ def m2fs_traceflat(dbname, workdir, fiberconfig):
     fnames = [get_file(x, workdir, "d") for x in flattab["FILE"]]
     m2fs_make_master_flat(fnames, masterflatname)
     
-    m2fs_trace_orders(masterflatname, fiberconfig, make_plot=True)
+    m2fs_trace_orders(masterflatname, fiberconfig, trace_degree=7, stdev_degree=3, make_plot=True)
     
     for fname in fnames:
         m2fs_trace_orders(fname, fiberconfig, make_plot=True)
-
+    
     mark_finished(workdir, "traceflat")
 
 def m2fs_wavecal_find_sources(dbname, workdir):
@@ -178,67 +178,170 @@ if __name__=="__main__":
     
     # M2FS profile
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatnames[-1],arcnames[-1],fiberconfig)
+    #ysfunc, Lfunc = m2fs_get_pixel_functions(flatnames[-1],arcnames[-2],fiberconfig)
     R, eR, header = read_fits_two(flatnames[-1])
     shape = R.shape
     X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
-    deg = [5, 5]
-    iobj, iord = 0, 0
+    deg = [3, 12]
+    yscut = 2.0
     
     from m2fs_utils import fit_ghlb
     alloutput = []
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    Ntrace = Nobj*Norder
     used = np.zeros_like(R)
     modeled_flat = np.zeros_like(R)
-    for iobj in range(Nobj):
-        for iord in range(Norder):
-            itrace = iord + iobj*Norder + 1
-            
-            #import m2fs_utils
-            #yscut = 10.0
-            #ys = ysfunc(iobj, iord, X, Y)
-            ### Get arrays of relevant pixels
-            #Yarr, eYarr, indices = m2fs_utils.make_ghlb_y_matrix(iobj, iord, ys, R, eR, yscut=yscut)
-            #this_X = X[indices]
-            #Xmin, Xmax = fiberconfig[4][iord]
-            #iiXcut = (Xmin <= this_X) & (this_X <= Xmax)
-            #indices = tuple([ix[iiXcut] for ix in indices])
-            #Yarr, eYarr = Yarr[iiXcut], eYarr[iiXcut]
-            #ys = ys[indices]
-            ##ys = ys[indices]
-            ### Evaluate L
-            #L = Lfunc(iobj, iord, np.ravel(X[indices]), np.ravel(Y[indices]))
-            ### Compute S'(L)
-            #Sprimefunc = fit_Sprime(ys, L, Yarr, eYarr, 2048)
-            
+
+    iobjs = range(Nobj)
+    iords = range(Norder)
+
+    start = time.time()
+    import matplotlib.pyplot as plt
+    
+    #fig, axes = plt.subplots(Ntrace,4,figsize=(6*4,6*Ntrace))
+    for iobj in iobjs:
+        fig, axes = plt.subplots(Norder, 4, figsize=(6*4,6*Norder))
+        for iord in iords:
+            print("iobj={} iord={}".format(iobj,iord))
+            itrace = iord + iobj*Norder
             output = fit_ghlb(iobj, iord, fiberconfig,
                               X, Y, R, eR,
                               ysfunc, Lfunc, deg,
-                              yscut = 1.0, maxiter = 10, sigma = 5.0)
-            pfit, yfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc = output
+                              pixel_spacing = 1,
+                              yscut = yscut, maxiter1=5, maxiter2=5, sigma = 4.0)
+            pfit, Rfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc, Sprime, Sfunc, S, Pfit = output
             alloutput.append(output)
             used[indices] = used[indices] + 1
-            modeled_flat[indices] = yfit
-            break
-        break
+            modeled_flat[indices] += Rfit
+            
+            ax = axes[iord,0]
+            ax.plot(L, Yarr, 'k,')
+            ax.plot(L, S, '.')
+            Lplot = np.arange(L.min(), L.max()+0.1, 0.1)
+            ax.plot(Lplot, Sfunc(Lplot), '-')
+            ax.set_xlabel("L"); ax.set_ylabel("S(L)")
+            ax.set_title("iobj={} iord={}".format(iobj,iord))
+            
+            ax = axes[iord,1]
+            ax.scatter(L,ys,c=Pfit, alpha=.1)
+            ax.set_xlabel("L"); ax.set_ylabel("ys")
+            ax.set_title("GHLB Profile")
+            
+            #ax = axes[iord,2]
+            #ax.plot(L, Yarr - Rfit, '.')
+            #ax.axhline(0, color='k', ls=':')
+            #ax.set_xlabel("L"); ax.set_ylabel("R - Rfit")
+            
+            ax = axes[iord,2]
+            resid = (Yarr - Rfit)/eYarr
+            yslims = [0, 1, 2, np.inf]
+            markersizes = [6, 3, 2]
+            colors = ['r','orange','k']
+            absys = np.abs(ys)
+            for i in range(len(yslims)-1):
+                ys1, ys2 = yslims[i], yslims[i+1]
+                ii = np.logical_and(absys >= ys1, absys < ys2)
+                ax.plot(L[ii], resid[ii], 'o', color=colors[i], ms=markersizes[i], alpha=.5, mew=0,
+                        label="{:.1f} < ys < {:.1f}".format(ys1,ys2))
+            #ax.scatter(L, resid, c=ys, vmin=-yscut, vmax=yscut, alpha=.2, cmap='coolwarm')
+            ax.axhline(0, color='r', ls=':')
+            ax.legend(fancybox=True)
+            ax.set_xlabel("L"); ax.set_ylabel("(R - Rfit)/eR")
+            ax.set_ylim(-5,5)
+            Nbad = np.sum(np.abs(resid) > 5)
+            ax.set_title("Leg={} GH={} chi2r={:.2f}".format(deg[0], deg[1], np.sum(resid)**2/len(resid)))
+            
+            ax = axes[iord,3]
+            ax.hist(resid, bins=np.arange(-5, 5.1,.1), normed=True, histtype='step')
+            xplot = np.linspace(-5,5,1000)
+            ax.plot(xplot, np.exp(-xplot**2/2.)/np.sqrt(2*np.pi), 'k')
+            #ax.axvline(0)
+            #ax.axhline(0, color='k', ls=':')
+            ax.set_xlabel("(R - Rfit)/eR")
+            ax.set_title("{}/{} points outside limits".format(Nbad, len(resid)))
+        start2 = time.time()
+        fig.savefig("GHLB_Obj{:03}.png".format(iobj), bbox_inches="tight")
+        print("Saved figure: {:.1f}s".format(time.time()-start2))
+        plt.close(fig)
+    print("Finished huge fit: {:.1f}s".format(time.time()-start))
+    #fig.savefig("huge_ghlb_flat.png", bbox_inches="tight")
+    #plt.close(fig)
+    #print("Saved figure: {:.1f}s".format(time.time()-start))
+    #plt.show()
     
-def tmp():
-    import matplotlib.pyplot as plt
-    plt.figure()
+##def tmp():
+##    ax = axes[2]
+##    Rplot = R.copy()
+##    unused = np.ones_like(Rplot, dtype=bool)
+##    unused[indices] = False
+##    Rplot[unused] = 0.0
+##    ax.imshow(Rplot.T, origin="lower")
+##    ax.set_title("Data for this trace")
+##    
+##    ax = axes[3]
+##    fitdata = np.zeros_like(Rplot)
+##    fitdata[indices] = Rfit
+##    ax.imshow((Rplot - fitdata).T, origin="lower", cmap="coolwarm")
+##    ax.set_title("Residuals")
+##    plt.show()
+
+
+##def plot_fit():
+##    Pprime = np.exp(-ys**2/2.)
+##    Yprime = Yarr/Pprime
+##    Wprime = (Pprime/eYarr)
+##    Wprime = Wprime/np.sum(Wprime)
+##    fig, axes = plt.subplots(2,2,figsize=(10,10))
+##    ax = axes[0,0]
+##    ax.set_title("iobj={} iord={} color=ys".format(iobj,iord))
+##    sc = ax.scatter(L, Yprime, c=ys, cmap="coolwarm", vmin=-yscut, vmax=yscut, alpha=.5)
+##    Lmin, Lmax = L.min(), L.max()
+##    Lplot = np.linspace(Lmin,Lmax,1000)
+##    ax.plot(Lplot, Sprimefunc(Lplot), color='orange')
+##    ax.set_xlabel("L")
+##    ax.set_ylabel("R/P")
+##    ax.set_ylim(0,np.percentile(Yprime,99))
+##    
+##    ax = axes[0,1]
+##    ax.scatter(ys, Yprime, c=L, alpha=.5)
+##    ax.set_xlabel("ys")
+##    ax.set_ylabel("R/P")
+##    ax.set_ylim(0,np.percentile(Yprime,99))
+##    
+##    ax = axes[1,0]
+##    ax.scatter(L, ys, c=Wprime, alpha=.5, cmap="plasma")
+##    ax.set_xlabel("L")
+##    ax.set_ylabel("ys")
+##    
+##    ax = axes[1,1]
+##    ax.scatter(ys, Wprime, c=L, alpha=.5)
+##    ax.set_ylim(0,np.max(Wprime))
+##    ax.set_xlabel("ys")
+##    ax.set_ylabel("Wprime")
+##    
+##    plt.show()
+##    
+##def tmp():
+    fig = plt.figure(figsize=(8,8))
     plt.imshow(used.T, origin="lower")
-    plt.title("Locations to model")
-    plt.colorbar()
+    plt.title("Pixels used in model")
+    plt.colorbar(label="number times used")
+    fig.savefig("model_used.png")
 
-    plt.figure()
+    fig = plt.figure(figsize=(8,8))
     plt.imshow(modeled_flat.T, origin="lower")
-    plt.title("Model")
+    plt.title("Model fit")
     plt.colorbar()
+    fig.savefig("model_fit.png")
 
-    plt.figure()
+    fig = plt.figure(figsize=(8,8))
     plt.imshow((R - modeled_flat).T, origin="lower")
     plt.colorbar()
     plt.title("Data - model")
+    fig.savefig("model_resid.png")
     
-    plt.show()
+    plt.close("all")
+    #plt.show()
     # M2FS extract
     # Associate arcs and flats to data
     # Forward Model Flux(obj,order,lambda)

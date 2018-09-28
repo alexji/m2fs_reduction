@@ -593,9 +593,10 @@ def m2fs_load_tracestd_function(flatname, fiberconfig):
         itrace = iobj*Norders + iorder
         return functions[itrace](x)
     return tracestd_func
-    
+
 def m2fs_trace_orders(fname, fiberconfig,
                       nthresh=2.0, ystart=0, dx=20, dy=5, nstep=10, degree=5, ythresh=500,
+                      trace_degree=None, stdev_degree=None,
                       make_plot=True):
     """
     Order tracing by fitting. Adapted from Terese Hansen
@@ -605,8 +606,12 @@ def m2fs_trace_orders(fname, fiberconfig,
     midx = round(nx/2.)
     thresh = nthresh*np.median(data)
     
+    if trace_degree is None: trace_degree = degree
+    if stdev_degree is None: stdev_degree = degree
+
     Nobjs, Norders = fiberconfig[0], fiberconfig[1]
     expected_fibers = Nobjs * Norders
+    ordpixranges = fiberconfig[4]
     
     # Find peaks at center of CCD
     auxdata = np.zeros(ny)
@@ -632,7 +637,7 @@ def m2fs_trace_orders(fname, fiberconfig,
         peak[i] = coef[1]
     assert npeak==expected_fibers
     # TODO allow some interfacing of the parameters and plotting
-
+    
     ## FIRST TRACE: do in windows
     # Trace peaks across dispersion direction
     ypeak = np.zeros((nx,npeak))
@@ -641,6 +646,9 @@ def m2fs_trace_orders(fname, fiberconfig,
     ypeak[midx,:] = peak
     start = time.time()
     for i in range(npeak):
+        iobj = i // Norders
+        iord = i % Norders
+        
         sys.stdout.write("\r")
         sys.stdout.write("TRACING FIBER {} of {}".format(i+1,npeak))
         # Trace right
@@ -658,7 +666,8 @@ def m2fs_trace_orders(fname, fiberconfig,
             auxy = auxdata0[ix1:ix2]
             # stop tracing orders that run out of signal
             if (data[j,int(ypeak[j-nstep,i])] <= data[j-nstep,int(ypeak[j-2*nstep,i])]) and \
-               (data[j,int(ypeak[j-nstep,i])] <= ythresh):
+               (data[j,int(ypeak[j-nstep,i])] <= ythresh) or \
+               j > ordpixranges[iord][1]:
                 break
             if np.max(auxy) >= auxthresh:
                 try:
@@ -689,7 +698,8 @@ def m2fs_trace_orders(fname, fiberconfig,
             auxy = auxdata0[ix1:ix2]
             # stop tracing orders that run out of signal
             if (data[j,int(ypeak[j+nstep,i])] <= data[j+nstep,int(ypeak[j+2*nstep,i])]) and \
-               (data[j,int(ypeak[j+nstep,i])] <= ythresh):
+               (data[j,int(ypeak[j+nstep,i])] <= ythresh) or \
+               j < ordpixranges[iord][0]:
                 break
             if np.max(auxy) >= auxthresh:
                 try:
@@ -709,16 +719,16 @@ def m2fs_trace_orders(fname, fiberconfig,
     ystdv[(nopeak == 1) | (ypeak == 0)] = np.nan
     print("\nTracing took {:.1f}s".format(time.time()-start))
     
-    coeff = np.zeros((degree+1,npeak))
-    coeff2 = np.zeros((degree+1,npeak))
+    coeff = np.zeros((trace_degree+1,npeak))
+    coeff2 = np.zeros((stdev_degree+1,npeak))
     for i in range(npeak):
         sel = np.isfinite(ypeak[:,i]) #np.where(ypeak[:,i] != -666)[0]
         xarr_fit = np.arange(nx)[sel]
-        #auxcoeff = np.polyfit(xarr_fit, ypeak[sel,i], degree)
-        _, auxcoeff = jds_poly_reject(xarr_fit, ypeak[sel,i], degree, 5, 5)
+        #auxcoeff = np.polyfit(xarr_fit, ypeak[sel,i], trace_degree)
+        _, auxcoeff = jds_poly_reject(xarr_fit, ypeak[sel,i], trace_degree, 5, 5)
         coeff[:,i] = auxcoeff
-        #auxcoeff2 = np.polyfit(xarr_fit, ystdv[sel,i], degree)
-        _, auxcoeff2 = jds_poly_reject(xarr_fit, ystdv[sel,i], degree, 5, 5)
+        #auxcoeff2 = np.polyfit(xarr_fit, ystdv[sel,i], stdev_degree)
+        _, auxcoeff2 = jds_poly_reject(xarr_fit, ystdv[sel,i], stdev_degree, 5, 5)
         coeff2[:,i] = auxcoeff2
 
     fname1, fname2 = m2fs_get_trace_fnames(fname)
@@ -728,6 +738,7 @@ def m2fs_trace_orders(fname, fiberconfig,
     
     if make_plot:
         import matplotlib.pyplot as plt
+        ## Trace Image
         fig, ax = plt.subplots(figsize=(20,20))
         ax.imshow(data.T, origin="lower")
         xarr = np.arange(2048)
@@ -746,11 +757,28 @@ def m2fs_trace_orders(fname, fiberconfig,
                 finite = np.isfinite(ypeak[:,ipeak])
                 ax.errorbar(xarr[finite], yarr[finite], yerr=eyarr[finite], fmt='r.', ms=1., elinewidth=1)
                 ax.errorbar(xarr, ypeak[:,ipeak], yerr=ystdv[:,ipeak], fmt='co', ms=1, elinewidth=.5, ecolor='c')
-        fig.savefig("{}/{}_trace.png".format(
+        fig.savefig("{}/{}_traceimg.png".format(
                 os.path.dirname(fname), os.path.basename(fname)[:-5]),
                     dpi=300,bbox_inches="tight")
         plt.close(fig)
         
+        ## Trace Residuals
+        fig, axes = plt.subplots(1,2,figsize=(16,6))
+        for ax in axes:
+            ax.axhline(0,color='k',ls=':')
+        for iobj in range(Nobjs):
+            for iord in range(Norders):
+                ipeak = iobj*Norders + iord
+                finite = np.isfinite(ypeak[:,ipeak])
+                axes[0].plot(xarr[finite], ypeak[finite,ipeak] - tracefn(iobj, iord, xarr[finite]),'.-')
+                axes[1].plot(xarr[finite], ystdv[finite,ipeak] - trstdfn(iobj, iord, xarr[finite]),'.-')
+        axes[0].set_title("ypeak residual")
+        axes[1].set_title("ystdv residual")
+        fig.savefig("{}/{}_traceresid.png".format(
+                os.path.dirname(fname), os.path.basename(fname)[:-5]),
+                    bbox_inches="tight")
+        plt.close(fig)
+            
         fig, ax = plt.subplots(figsize=(8,8))
         stdevs = np.zeros((nx,npeak))
         #for j in range(npeak):
@@ -945,7 +973,7 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
     sigma = 3.
     ycenmin = 0.
     ycenmax = 2055.
-    deg = [3,4,6]
+    deg = [3,4,5]
     Xmin,Xmax = 0., 2048-1.
     #Xmins = [700, 0, 0, 0]
     #Xmaxs = [2047, 2047, 2047, 1300]
@@ -1156,7 +1184,7 @@ def make_ghlb_y_matrix(iobj, iord, ys, R, eR,
     Rout = np.ravel(R[indices])
     eRout = np.ravel(eR[indices])
     return Rout, eRout, indices
-def make_ghlb_feature_matrix(iobj, iord, L, ys, Yprime,
+def make_ghlb_feature_matrix(iobj, iord, L, ys, Sprime,
                              fiberconfig, deg):
     """
     Create GHLB feature matrix
@@ -1170,7 +1198,7 @@ def make_ghlb_feature_matrix(iobj, iord, L, ys, Yprime,
     L = np.ravel(L)
     ys = np.ravel(ys)
     assert len(L)==len(ys)
-    assert len(L)==len(Yprime)
+    assert len(L)==len(Sprime)
     N = len(L)
     
     ## Normalize wavelengths
@@ -1179,7 +1207,7 @@ def make_ghlb_feature_matrix(iobj, iord, L, ys, Yprime,
     Lwid = (Lmax-Lmin)/2.
     Ln = (L-Lcen)/Lwid
     ## Construct features: legendre x gauss-hermite
-    La = [special.eval_legendre(a, Ln)*Yprime for a in range(NL)]
+    La = [special.eval_legendre(a, Ln)*Sprime for a in range(NL)]
     expys = np.exp(-ys**2/2.)
     Hb = [special.eval_hermitenorm(b, ys)*expys for b in range(NH)]
     polygrid = np.zeros((N,Nparam))
@@ -1187,31 +1215,28 @@ def make_ghlb_feature_matrix(iobj, iord, L, ys, Yprime,
         for b in range(NH):
             polygrid[:,b+a*NH] = La[a]*Hb[b]
     return polygrid
-def fit_Sprime(ys, L, Y, eY, Npix, maxiter=5, sigma=5.):
-    Pprime = np.exp(-ys**2/2.)
-    Yprime = Y/Pprime
-    Wprime = (Pprime/eY)**2. # inverse variance of Yprime
+
+def fit_S_with_profile(P, L, R, eR, Npix):
+    """ R(L,y) = S(L) * P(L,y) """
+    RP = R/P
+    W = (P/eR)**2.
+    W = W/W.sum()
     Lmin, Lmax = L.min(), L.max()
-    # fit B spline
-    knots = np.linspace(Lmin, Lmax, Npix)[1:-1] # LSQ adds end knots
-    #for i in range(len(knots)-1):
-    #    t1,t2 = knots[i], knots[i+1]
-    #    if np.sum((t1 < L) & (L < t2)) == 0:
-    #        print("Oh no at ",i)
+    knots = np.linspace(Lmin, Lmax, Npix)[1:-1] # LSQUnivariateSpline adds two end knots
+    ## Fit B Spline
     iisort = np.argsort(L)
-    Lsort = L[iisort]
-    Yprimesort = Yprime[iisort]
-    Wprimesort = Wprime[iisort]
-    Sprimefunc = interpolate.LSQUnivariateSpline(Lsort, Yprimesort, knots, Wprimesort)
-    #mask = np.zeros_like(Lsort)
-    #for iter in range(maxiter):
-    #    stdev = biweight_scale(
-    return Sprimefunc
+    Sfunc = interpolate.LSQUnivariateSpline(L[iisort], RP[iisort], knots, W[iisort])
+    return Sfunc
+def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
+    ii = np.abs(ys) < ysmax
+    ys, R, eR, L = ys[ii], R[ii], eR[ii], L[ii]
+    P = np.exp(-ys**2/2.)
+    return fit_S_with_profile(P, L, R, eR, Npix)
     
 def fit_ghlb(iobj, iord, fiberconfig,
              X, Y, R, eR,
              ysfunc, Lfunc, deg,
-             yscut = 4.0, maxiter = 10, sigma = 5.0):
+             pixel_spacing=1, yscut = 2.0, maxiter1=5, maxiter2=5, sigma = 5.0):
     """
     Iteratively fit GHLB with outlier rejection (using biweight_scale)
     Input: iobj, iord, fiberconfig
@@ -1231,7 +1256,7 @@ def fit_ghlb(iobj, iord, fiberconfig,
     Return: 
     """
     assert len(deg)==2, deg
-
+    
     start = time.time()
     ## Evaluate ys
     ys = ysfunc(iobj, iord, X, Y)
@@ -1239,6 +1264,7 @@ def fit_ghlb(iobj, iord, fiberconfig,
     Yarr, eYarr, indices = make_ghlb_y_matrix(iobj, iord, ys, R, eR, yscut=yscut)
     this_X = X[indices]
     Xmin, Xmax = fiberconfig[4][iord]
+    Npix = (Xmax-Xmin+1)//pixel_spacing
     iiXcut = (Xmin <= this_X) & (this_X <= Xmax)
     indices = tuple([ix[iiXcut] for ix in indices])
     Yarr, eYarr = Yarr[iiXcut], eYarr[iiXcut]
@@ -1247,30 +1273,46 @@ def fit_ghlb(iobj, iord, fiberconfig,
     L = Lfunc(iobj, iord, np.ravel(X[indices]), np.ravel(Y[indices]))
 
     ## Compute S'(L)
-    Sprimefunc = fit_Sprime(ys, L, Yarr, eYarr, Xmax-Xmin+1)
-    Yprime = Sprimefunc(L)
+    Sprimefunc = fit_Sprime(ys, L, Yarr, eYarr, Npix)
+    Sprime = Sprimefunc(L)
     
-    ## Create GHLB feature matrix TODO ADD S'
-    Xmat = make_ghlb_feature_matrix(iobj, iord, L, ys, Yprime,
-                                    fiberconfig, deg)
-    
-    ## Run weighted linear least squares
-    warr = 1./eYarr
-    wXarr = (Xmat.T*warr).T
-    wYarr = warr*Yarr
+    ## Iterate: compute GHLB, reextract S
+    S = Sprime
     mask = np.zeros(len(Yarr), dtype=bool)
-    pfit, residues, rank, svals = linalg.lstsq(wXarr, wYarr)
-    yfit = Xmat.dot(pfit)
-    
-    ## Iteratively remove outliers and refit
-    for iter in range(maxiter):
-        dY = Yarr - yfit
-        stdev = biweight_scale(dY[~mask])
-        mask |= (np.abs(dY) > sigma * stdev)
-        pfit, residues, rank, svals = linalg.lstsq(wXarr[~mask], wYarr[~mask])
-        yfit = Xmat.dot(pfit)
+    for iter in range(maxiter1):
+        ## Create GHLB feature matrix
+        Xmatprime = make_ghlb_feature_matrix(iobj, iord, L, ys, S,
+                                        fiberconfig, deg)
+        ## TODO Horne86 says use the model profile + read noise to recompute variance.
+        ## The original estimate over-weights downward noise fluctuations!
+        
+        ## Fit GHLB coefficients with weighted linear least squares
+        warr = 1./eYarr
+        wXarr = (Xmatprime.T*warr).T
+        wYarr = warr*Yarr
+        pfit, residues, rank, svals = linalg.lstsq(wXarr, wYarr)
+        yfit = Xmatprime.dot(pfit)
+        lastNmask = np.sum(mask)
+        ## Iteratively remove outliers and refit
+        for iter2 in range(maxiter2):
+            dY = Yarr - yfit
+            stdev = biweight_scale(dY[~mask])
+            mask |= (np.abs(dY) > sigma * stdev)
+            #print("  Iter {}: {}/{} pixels masked".format(iter+1, np.sum(mask), len(mask)))
+            pfit, residues, rank, svals = linalg.lstsq(wXarr[~mask], wYarr[~mask])
+            yfit = Xmatprime.dot(pfit)
+        #    Nmask = np.sum(mask)
+        #    if lastNmask == Nmask: break
+        #    lastNmask = Nmask
+        
+        ## Re-extract S
+        Xmat = make_ghlb_feature_matrix(iobj, iord, L, ys, np.ones_like(L),
+                                        fiberconfig, deg)
+        Pfit = Xmat.dot(pfit)
+        Sfunc = fit_S_with_profile(Pfit, L, Yarr, eYarr, Npix)
+        S = Sfunc(L)
         print("  Iter {}: {}/{} pixels masked".format(iter+1, np.sum(mask), len(mask)))
-    print("Total time took {:.1f}s".format(time.time()-start))
-    
+        
     #return pfit, Xmat, L, ys, mask, indices
-    return pfit, yfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc, Yprime
+    print("Total time took {:.1f}s".format(time.time()-start))
+    return pfit, yfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc, Sprime, Sfunc, S, Pfit
