@@ -284,6 +284,16 @@ def make_db_file(rawdir, dbname=None):
     tab.write(dbname,format="ascii.fixed_width_two_line",overwrite=True)
 
 
+def m2fs_get_calib_files(db, calibconfig):
+    objnums = np.unique(calibconfig["sciencenum"])
+    flatnums = np.unique(calibconfig["flatnum"])
+    arcnums = np.unique(calibconfig["arcnum"])
+    
+    objtab = tab[tab["EXPTYPE"]=="Object"]
+    flattab = tab[tab["EXPTYPE"]=="Flat"]
+    arctab = tab[tab["EXPTYPE"]=="Comp"]
+    
+
 ##################
 # Pipeline calls
 ##################
@@ -967,7 +977,7 @@ def make_wavecal_feature_matrix(iobj,iord,X,Y,
     return np.concatenate([legpolymat, indicatorpolymat], axis=1)
 
 def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
-                                      make_plot=True):
+                                      flatfname=None, make_plot=True):
     ## parameters of the fit. Should do this eventually with a config file, kwargs, or something.
     maxiter = 5
     min_lines_per_order = 10
@@ -1113,19 +1123,28 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
         axes[0,1].set_ylabel("Lrms")
 
         for iord in range(Norder):
-            axes[1,1].plot(np.arange(Nobj), Lrmsarr[:,iord], "o-")
+            axes[1,1].plot(np.arange(Nobj), Lrmsarr[:,iord], "o-", label=str(trueord[iord]))
         axes[1,1].set_xlabel("Object")
         axes[1,1].set_ylabel("Lrms")
+        axes[1,1].legend(fontsize=8, framealpha=.5)
         
         ax = axes[1,0]
+        if flatfname is not None:
+            tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+            ax.set_title("Y from trace")
+        else:
+            ax.set_title("Y = Ycen at X=1023")
         for iobj in range(Nobj):
             for iord in range(Norder):
-                Ycen = np.unique(data["Ycen"][np.logical_and(data["iobj"]==iobj, data["iorder"]==iord)])[0]
-                Xarr = np.arange(Xmin,Xmax)
-                Xmat = make_wavecal_feature_matrix(iobj, iord, Xarr, Ycen,
+                Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
+                if flatfname is None:
+                    Yarr = np.unique(data["Ycen"][np.logical_and(data["iobj"]==iobj, data["iorder"]==iord)])[0]
+                else:
+                    Yarr = tracefn(iobj, iord, Xarr)
+                Xmat = make_wavecal_feature_matrix(iobj, iord, Xarr, Yarr,
                                                    Nobj, trueord, Xmin, Xmax, Ymin, Ymax, deg)
                 Lfit = Xmat.dot(pfit)
-                ax.plot(Xarr, Lfit)
+                ax.plot(Xarr, Lfit, lw=.5)
         ax.set_xlabel("X")
         ax.set_ylabel("Lambda")
         fig.savefig(figfname, bbox_inches="tight")
@@ -1233,6 +1252,117 @@ def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
     P = np.exp(-ys**2/2.)
     return fit_S_with_profile(P, L, R, eR, Npix)
     
+def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, 
+                                  badcols=[], yscut=2.0, deg=[2,2], sigma=5.0, maxiter=10,
+                                  verbose=True, make_plot=True):
+    """
+    The basic idea is to mask out the defined extraction regions in the 2D image,
+    then fit a 2D legendre polynomial to the rest of the pixels.
+    """
+    start = time.time()
+    outdir = os.path.dirname(fname)
+    assert fname.endswith(".fits")
+    name = os.path.basename(fname)[:-5]
+    outname = name+"s"
+    outfname = os.path.join(outdir, outname+".fits")
+    
+    ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
+    R, eR, header = read_fits_two(fname)
+    shape = R.shape
+    X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
+    used = np.zeros_like(R, dtype=bool)
+    
+    # Find all pixels used in extraction
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            ys = ysfunc(iobj, iord, X, Y)
+            used[np.abs(ys) < yscut] = True
+    print("m2fs_subtract_scattered_light: took {:.1f}s to find extracted pixels".format(time.time()-start))
+    
+    scatlight = R.copy()
+    scatlight[used] = np.nan
+    
+    ## Fit scattered light with iterative rejection
+    def normalize(x):
+        """ Linearly scale from -1 to 1 """
+        x = np.array(x)
+        nx = len(x)
+        xmin, xmax = x.min(), x.max()
+        xhalf = (x.max()-x.min())/2.
+        return (x-xhalf)/xhalf
+    XN, YN = np.meshgrid(normalize(np.arange(shape[0])), normalize(np.arange(shape[1])), indexing="ij")
+    finite = np.isfinite(scatlight)
+    _XN = XN[finite].ravel()
+    _YN = YN[finite].ravel()
+    _scatlight = scatlight[finite].ravel()
+    _scatlighterr = eR[finite].ravel()
+    _scatlightfit = np.full_like(_scatlight, np.nanmedian(_scatlight)) # initialize fit to constant
+    Noutliertotal = 0
+    for iter in range(maxiter):
+        # Clip outlier pixels
+        normresid = (_scatlight - _scatlightfit)/_scatlighterr
+        #mu = np.nanmedian(resid)
+        #sigma = np.nanstd(resid)
+        #iinotoutlier = np.logical_and(resid < mu + sigmathresh*sigma, resid > mu - sigmathresh*sigma)
+        iinotoutlier = np.abs(normresid < sigma)
+        Noutlier = np.sum(~iinotoutlier)
+        if verbose: print("  m2fs_subtract_scattered_light: Iter {} removed {} pixels".format(iter, Noutlier))
+        if Noutlier == 0: break
+        Noutliertotal += Noutlier
+        _XN = _XN[iinotoutlier]
+        _YN = _YN[iinotoutlier]
+        _scatlight = _scatlight[iinotoutlier]
+        _scatlighterr = _scatlighterr[iinotoutlier]
+        # Fit scattered light model
+        xypoly = np.polynomial.legendre.legvander2d(_XN, _YN, deg)
+        coeff = np.linalg.lstsq(xypoly, _scatlight, rcond=-1)[0]
+        # Evaluate the scattered light model
+        _scatlightfit = xypoly.dot(coeff)
+    scatlightpoly = np.polynomial.legendre.legvander2d(XN.ravel(), YN.ravel(), deg)
+    scatlightfit = (scatlightpoly.dot(coeff)).reshape(shape)
+    
+    data = R - scatlightfit
+    edata = eR + scatlightfit
+    header.add_history("m2fs_subtract_scattered_light: subtracted scattered light")
+    header.add_history("m2fs_subtract_scattered_light: degree={}".format(deg))
+    header.add_history("m2fs_subtract_scattered_light: removed {} outlier pixels in {} iters".format(Noutliertotal, iter+1))
+    write_fits_two(outfname, data, edata, header)
+    print("Wrote to {}".format(outfname))
+    print("m2fs_scatlight took {:.1f}s".format(time.time()-start))
+    
+    if make_plot:
+        fig2 = plt.figure(figsize=(8,8))
+        im = plt.imshow(scatlightfit.T, origin='lower', aspect='auto', interpolation='none')
+        #plt.axvline(badcolmin,lw=1,color='k',linestyle=':')
+        #plt.axvline(badcolmax,lw=1,color='k',linestyle=':')
+        plt.title("Scattered light fit (deg={}, max={})".format(deg,np.nanmax(scatlightfit)))
+        plt.colorbar()
+        outpre = outdir+"/"+outname
+        fig2.savefig(outpre+"_scatlight_fit.png",bbox_inches='tight')
+        fig3 = plt.figure(figsize=(8,8))
+        resid = scatlight-scatlightfit
+        minresid = np.nanpercentile(resid,.1)
+        im = plt.imshow(resid.T, origin='lower', aspect='auto', cmap='coolwarm',
+                        vmin=minresid, vmax=abs(minresid), interpolation='none')
+        #plt.axvline(badcolmin,lw=1,color='k',linestyle=':')
+        #plt.axvline(badcolmax,lw=1,color='k',linestyle=':')
+        plt.title("Scattered Light Residual (median = {:.2f})".format(np.nanmedian(resid)))
+        plt.colorbar()
+        fig3.savefig(outpre+"_scatlight_resid.png",bbox_inches='tight')
+        fig1 = plt.figure(figsize=(8,8))
+        residfrac = (scatlight-scatlightfit)/scatlight
+        minresid = np.nanpercentile(residfrac,.1)
+        im = plt.imshow(residfrac.T, origin='lower', aspect='auto', cmap='coolwarm',
+                        vmin=minresid, vmax=abs(minresid), interpolation='none')
+        #plt.axvline(badcolmin,lw=1,color='k',linestyle=':')
+        #plt.axvline(badcolmax,lw=1,color='k',linestyle=':')
+        plt.title("Scattered Light Relative Residual (med={:.2f})".format(np.nanmedian(residfrac)))
+        plt.colorbar()
+        fig1.savefig(outpre+"_scatlight_residfrac.png",bbox_inches='tight')
+        plt.close(fig1); plt.close(fig2); plt.close(fig3)
+    
+
 def fit_ghlb(iobj, iord, fiberconfig,
              X, Y, R, eR,
              ysfunc, Lfunc, deg,
@@ -1327,7 +1457,7 @@ def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma
     assert fname.endswith(".fits")
     name = os.path.basename(fname)[:-5]
     outfname1 = os.path.join(outdir,name+"_GHLB.npy")
-    outfname2 = os.path.join(outdir,name+"_specs.npy")
+    outfname2 = os.path.join(outdir,name+"_specs.fits")
     
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     R, eR, header = read_fits_two(fname)
@@ -1353,7 +1483,8 @@ def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma
                               pixel_spacing = 1,
                               yscut = yscut, maxiter1=5, maxiter2=5, sigma = sigma)
             pfit, Rfit, Yarr, eYarr, Xmat, L, ys, mask, indices, Sprimefunc, Sfunc, Pfit = output
-            alloutput.append([pfit,Rfit,Yarr,eYarr,Xmat,L,ys,mask,indices,Sprimefunc,Sfunc,Pfit])
+            #alloutput.append([pfit,Rfit,Yarr,eYarr,Xmat,L,ys,mask,indices,Sprimefunc,Sfunc,Pfit])
+            alloutput.append([pfit,mask,indices,Sfunc,Pfit])
             used[indices] = used[indices] + 1
             modeled_flat[indices] += Rfit
             
@@ -1402,6 +1533,9 @@ def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma
             plt.close(fig)
     print("Finished huge fit: {:.1f}s".format(time.time()-start))
     np.save(outfname1, [alloutput, used, modeled_flat])
+    write_fits_one("{}/{}_GHLB_used.fits".format(outdir, name), used, header)
+    write_fits_one("{}/{}_GHLB_model.fits".format(outdir, name), modeled_flat, header)
+    write_fits_one("{}/{}_GHLB_resid.fits".format(outdir, name), R-modeled_flat, header)
     ## TODO make outfname2, which is the extracted spectra evaluated at specific points
     if make_plot:
         fig = plt.figure(figsize=(8,8))
@@ -1419,7 +1553,7 @@ def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma
         plt.close(fig)
         
         fig = plt.figure(figsize=(8,8))
-        plt.imshow((R - modeled_flat).T, origin="lower")
+        plt.imshow((R - modeled_flat).T, origin="lower", vmin=-200, vmax=+200)
         plt.colorbar()
         plt.title("Data - model")
         fig.savefig(os.path.join(outdir,name+"_GHLB_resid.png"))

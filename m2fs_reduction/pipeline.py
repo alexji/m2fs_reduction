@@ -13,6 +13,7 @@ from m2fs_utils import m2fs_wavecal_find_sources_one_arc
 from m2fs_utils import m2fs_wavecal_identify_sources_one_arc
 from m2fs_utils import m2fs_wavecal_fit_solution_one_arc
 from m2fs_utils import m2fs_get_pixel_functions
+from m2fs_utils import m2fs_subtract_scattered_light
 from m2fs_utils import m2fs_ghlb_extract
 
 #################################################
@@ -28,6 +29,49 @@ def check_finished(workdir, task):
     return finished
 def get_file(dbrowfile, workdir, suffix=""):
     return os.path.join(workdir, os.path.basename(dbrowfile)+suffix+".fits")
+def load_db(dbname, calibconfig=None):
+    tab = ascii.read(dbname)
+    nums = np.array([int(x[-4:]) for x in tab["FILE"]])
+    tab.add_column(tab.Column(nums, "NUM"))
+    assert len(np.unique(tab["INST"])) == 1, np.unique(tab["INST"])
+    assert len(np.unique(tab["CONFIG"])) == 1, np.unique(tab["CONFIG"])
+    assert len(np.unique(tab["FILTER"])) == 1, np.unique(tab["FILTER"])
+    assert len(np.unique(tab["SLIT"])) == 1, np.unique(tab["FILTER"])
+    assert len(np.unique(tab["BIN"])) == 1, np.unique(tab["BIN"])
+    assert len(np.unique(tab["SPEED"])) == 1, np.unique(tab["SPEED"])
+    assert len(np.unique(tab["NAMP"])) == 1, np.unique(tab["NAMP"])
+    assert np.all([x in ["Dark","Comp","Flat","Object"] for x in tab["EXPTYPE"]])
+    if calibconfig is None:
+        return tab
+    else:
+        allnums = np.unique(calibconfig.to_pandas().as_matrix())
+        indices = np.array([num in allnums for num in tab["NUM"]])
+        return tab[indices]
+def get_obj_nums(calibconfig):
+    return np.array(calibconfig["sciencenum"])
+def get_flat_num(objnum, calibconfig):
+    ix = np.where(objnum==calibconfig["sciencenum"])[0][0]
+    return calibconfig[ix]["flatnum"]
+def get_arc_num(objnum, calibconfig):
+    ix = np.where(objnum==calibconfig["sciencenum"])[0][0]
+    return calibconfig[ix]["arcnum"]
+def get_obj_file(objnum, dbname, workdir, calibconfig, suffix="d"):
+    tab = load_db(dbname, calibconfig)
+    ix = np.where(tab["NUM"]==objnum)[0][0]
+    assert tab[ix]["EXPTYPE"]=="Object"
+    return get_file(tab[ix]["FILE"], workdir, suffix)
+def get_flat_file(objnum, dbname, workdir, calibconfig, suffix="d"):
+    flatnum = get_flat_num(objnum, calibconfig)
+    tab = load_db(dbname, calibconfig)
+    ix = np.where(tab["NUM"]==flatnum)[0][0]
+    assert tab[ix]["EXPTYPE"]=="Flat"
+    return get_file(tab[ix]["FILE"], workdir, suffix)
+def get_arc_file(objnum, dbname, workdir, calibconfig, suffix="d"):
+    arcnum = get_arc_num(objnum, calibconfig)
+    tab = load_db(dbname, calibconfig)
+    ix = np.where(tab["NUM"]==arcnum)[0][0]
+    assert tab[ix]["EXPTYPE"]=="Comp"
+    return get_file(tab[ix]["FILE"], workdir, suffix)
 
 #################################################
 # Pipeline steps
@@ -35,7 +79,7 @@ def get_file(dbrowfile, workdir, suffix=""):
 def m2fs_biastrim(dbname, workdir):
     if check_finished(workdir, "biastrim"): return
     
-    tab = ascii.read(dbname)
+    tab = load_db(dbname)
     for row in tab:
         outfile = os.path.join(workdir, os.path.basename(row["FILE"])+".fits")
         m2fs_4amp(row["FILE"], outfile)
@@ -45,7 +89,7 @@ def m2fs_darksub(dbname, workdir):
     
     ## Make master dark frame
     masterdarkname = os.path.join(workdir, "master_dark.fits")
-    tab = ascii.read(dbname)
+    tab = load_db(dbname)
     darktab = tab[tab["EXPTYPE"]=="Dark"]
     print("Found {} dark frames".format(len(darktab)))
     fnames = [get_file(x, workdir) for x in darktab["FILE"]]
@@ -62,33 +106,39 @@ def m2fs_darksub(dbname, workdir):
             m2fs_subtract_one_dark(fname, outfname, dark, darkerr, darkheader)
     
     mark_finished(workdir, "darksub")
-def m2fs_traceflat(dbname, workdir, fiberconfig):
+def m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig):
     if check_finished(workdir, "traceflat"): return
     
     ## Make a master flat
     masterflatname = os.path.join(workdir, "master_flat.fits")
-    tab = ascii.read(dbname)
+    tab = load_db(dbname)
     flattab = tab[tab["EXPTYPE"]=="Flat"]
     print("Found {} flatframes".format(len(flattab)))
     fnames = [get_file(x, workdir, "d") for x in flattab["FILE"]]
+    print("Running master flat (not really used right now)")
     m2fs_make_master_flat(fnames, masterflatname)
-    
     m2fs_trace_orders(masterflatname, fiberconfig, trace_degree=7, stdev_degree=3, make_plot=True)
     
-    for fname in fnames:
+    ## Run trace on individual flats
+    objnums = get_obj_nums(calibconfig)
+    fnames = [get_flat_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
+    for fname in np.unique(fnames):
         m2fs_trace_orders(fname, fiberconfig, make_plot=True)
-    
     mark_finished(workdir, "traceflat")
 
-def m2fs_wavecal_find_sources(dbname, workdir):
+def m2fs_wavecal_find_sources(dbname, workdir, calibconfig):
     if check_finished(workdir, "wavecal-findsources"): return
     ## Get list of arcs to process
-    tab = ascii.read(dbname)
-    filter = np.unique(tab["FILTER"])[0]
-    config = np.unique(tab["CONFIG"])[0]
-    arctab = tab[tab["EXPTYPE"]=="Comp"]
-    print("Found {} arc frames".format(len(arctab)))
-    fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    #tab = load_db(dbname)
+    #filter = np.unique(tab["FILTER"])[0]
+    #config = np.unique(tab["CONFIG"])[0]
+    #arctab = tab[tab["EXPTYPE"]=="Comp"]
+    #print("Found {} arc frames".format(len(arctab)))
+    #fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    
+    ## Get list of arcs to process
+    objnums = get_obj_nums(calibconfig)
+    fnames = [get_arc_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
     
     start = time.time()
     for fname in fnames:
@@ -97,19 +147,23 @@ def m2fs_wavecal_find_sources(dbname, workdir):
     print("Finding all sources took {:.1f}s".format(time.time()-start))
     mark_finished(workdir, "wavecal-findsources")
     
-def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig):
+def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig):
     if check_finished(workdir, "wavecal-identifysources"): return
     
     ## TODO use fiberconfig to get this somehow!!!
     identified_sources = ascii.read("data/Mg_Wide_r_id.txt")
     
     ## Get list of arcs to process
-    tab = ascii.read(dbname)
-    filter = np.unique(tab["FILTER"])[0]
-    config = np.unique(tab["CONFIG"])[0]
-    arctab = tab[tab["EXPTYPE"]=="Comp"]
-    print("Found {} arc frames".format(len(arctab)))
-    fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    #tab = load_db(dbname)
+    #filter = np.unique(tab["FILTER"])[0]
+    #config = np.unique(tab["CONFIG"])[0]
+    #arctab = tab[tab["EXPTYPE"]=="Comp"]
+    #print("Found {} arc frames".format(len(arctab)))
+    #fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    
+    ## Get list of arcs to process
+    objnums = get_obj_nums(calibconfig)
+    fnames = [get_arc_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
     
     start = time.time()
     for fname in fnames:
@@ -117,37 +171,65 @@ def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig):
     print("Identifying all sources took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "wavecal-identifysources")
 
-def m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig):
+def m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig, calibconfig):
     if check_finished(workdir, "wavecal-fitsolution"): return
     
     ## Get list of arcs to process
-    tab = ascii.read(dbname)
-    filter = np.unique(tab["FILTER"])[0]
-    config = np.unique(tab["CONFIG"])[0]
-    arctab = tab[tab["EXPTYPE"]=="Comp"]
-    print("Found {} arc frames".format(len(arctab)))
-    fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    #tab = load_db(dbname)
+    #filter = np.unique(tab["FILTER"])[0]
+    #config = np.unique(tab["CONFIG"])[0]
+    #arctab = tab[tab["EXPTYPE"]=="Comp"]
+    #print("Found {} arc frames".format(len(arctab)))
+    #fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    
+    ## Get list of arcs to process
+    objnums = get_obj_nums(calibconfig)
+    fnames = [get_arc_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
     
     start = time.time()
-    for fname in fnames:
-        m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig, make_plot=True)
+    already_done = []
+    for fname,flatfname in zip(fnames, flatfnames):
+        if fname in already_done: continue
+        m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig, make_plot=True, flatfname=flatfname)
+        already_done.append(fname)
     print("Fitting wavelength solutions took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "wavecal-fitsolution")
 
-def m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig):
+def m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig):
+    if check_finished(workdir, "scatlight"): return
+    objnums = get_obj_nums(calibconfig)
+    objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
+    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
+    
+    start = time.time()
+    for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
+        m2fs_subtract_scattered_light(objfname, flatfname, arcfname, fiberconfig, 
+                                      sigma=5.0,deg=[2,2])
+    print("Scattered light subtraction took {:.1f}".format(time.time()-start))
+    mark_finished(workdir, "scatlight")
+
+def m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig, calibconfig):
     if check_finished(workdir, "flat-ghlb"): return
     
-    tab = ascii.read(dbname)
-    flattab = tab[tab["EXPTYPE"]=="Flat"]
-    print("Found {} flats".format(len(flattab)))
-    arctab = tab[tab["EXPTYPE"]=="Comp"]
-    ## HACK TODO need to do something about picking this, but for now....
-    arctab = arctab[arctab["EXPTIME"] < 30]
-    print("Found {} arcs".format(len(flattab)))
+    ##tab = load_db(dbname)
+    ##flattab = tab[tab["EXPTYPE"]=="Flat"]
+    ##print("Found {} flats".format(len(flattab)))
+    ##arctab = tab[tab["EXPTYPE"]=="Comp"]
+    #### HACK TODO need to do something about picking this, but for now....
+    ##arctab = arctab[arctab["EXPTIME"] < 30]
+    ##print("Found {} arcs".format(len(flattab)))
+    ##
+    ###masterflatname = os.path.join(workdir, "master_flat.fits")
+    ##flatfnames = [get_file(x, workdir, "d") for x in flattab["FILE"]]
+    ##arcfnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
     
-    #masterflatname = os.path.join(workdir, "master_flat.fits")
-    flatfnames = [get_file(x, workdir, "d") for x in flattab["FILE"]]
-    arcfnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
+    ## Get list of arcs to process
+    ## TODO think about this a bit more!!! Which files go with what?
+    objnums = get_obj_nums(calibconfig)
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
+    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
     
     start = time.time()
     for flatfname, arcfname in zip(flatfnames, arcfnames):
@@ -164,20 +246,15 @@ if __name__=="__main__":
     start = time.time()
     dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
     workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
+    calibconfigname = "nov2017run.txt"
     fiberconfigname = "data/Mg_wide_r.txt"
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(fiberconfigname)
     
+    tab = load_db(dbname)
     ## I am assuming everything is part of the same setting
-    tab = ascii.read(dbname)
-    assert len(np.unique(tab["INST"])) == 1, np.unique(tab["INST"])
-    assert len(np.unique(tab["CONFIG"])) == 1, np.unique(tab["CONFIG"])
-    assert len(np.unique(tab["FILTER"])) == 1, np.unique(tab["FILTER"])
-    assert len(np.unique(tab["SLIT"])) == 1, np.unique(tab["FILTER"])
-    assert len(np.unique(tab["BIN"])) == 1, np.unique(tab["BIN"])
-    assert len(np.unique(tab["SPEED"])) == 1, np.unique(tab["SPEED"])
-    assert len(np.unique(tab["NAMP"])) == 1, np.unique(tab["NAMP"])
+    #tab = ascii.read(dbname)
     arctab = tab[tab["EXPTYPE"]=="Comp"]
     flattab= tab[tab["EXPTYPE"]=="Flat"]
     objtab = tab[tab["EXPTYPE"]=="Object"]
@@ -185,21 +262,45 @@ if __name__=="__main__":
     flatnames= [get_file(x, workdir, "d") for x in flattab["FILE"]]
     objnames = [get_file(x, workdir, "d") for x in objtab["FILE"]]
     
+    calibconfig = ascii.read(calibconfigname)
     fiberconfig = m2fs_parse_fiberconfig(fiberconfigname)
     
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
-    m2fs_traceflat(dbname, workdir, fiberconfig)
+    m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig)
     
     ### M2FS wavecal
     ## Find sources in 2D arc spectrum (currently a separate step running sextractor)
-    m2fs_wavecal_find_sources(dbname, workdir)
+    m2fs_wavecal_find_sources(dbname, workdir, calibconfig)
     # NOTE: IF AN ARC HAS NOT BEEN IDENTIFIED, IT NEEDS TO BE DONE MANUALLY NOW
     ## Identify features in 2D spectrum with coherent point drift
-    m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig)
+    m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig)
     ## Use features to fit Xccd,Yccd(obj, order, lambda)
-    m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig)
+    m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig, calibconfig)
     
+    ### Scattered light subtraction
+    m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)    
+    
+    ### Frame-by-frame extraction
+    ## Fit GHLB for each object individually
+    ## This does NOT really work: the sky fibers are so faint that they have a really bad GHLB profile
+    ## They get pulled around everywhere by cosmics, Littrow ghost, etc
+    ## (The objects themselves seem fine!)
+    ## Also, note that extended outliers (cosmic rays along a trace, bad lines/columns) are not removed
+    ## Hopefully this can be remedied by fitting multiple exposures
+    objnums = get_obj_nums(calibconfig)
+    objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    
+    start = time.time()
+    for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
+        m2fs_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, yscut=2.0, deg=[2,10], sigma=5.0,
+                          make_plot=True, make_obj_plots=True)
+    print("Fitting GHLB to objects took {:.1f}".format(time.time()-start))
+    
+
+def tmp():
     ### M2FS extract
     ## Fit profile to flats
     ## TODO input a file that associates objects, flats, and arcs
@@ -207,7 +308,6 @@ if __name__=="__main__":
     ## TODO apply GHLB profiles to extract objects, including throughput correction
     
     
-def tmp():
     # M2FS profile
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatnames[-1],arcnames[-1],fiberconfig)
     #ysfunc, Lfunc = m2fs_get_pixel_functions(flatnames[-1],arcnames[-2],fiberconfig)
