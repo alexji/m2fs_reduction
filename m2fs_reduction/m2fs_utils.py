@@ -558,11 +558,13 @@ def m2fs_parse_fiberconfig(fname):
             X1, X2 = list(map(int, fp.readline().strip().split()))
             ordpixranges.append([X1, X2])
         
+        # Next line: identification data
+        line_identifications = os.path.join(os.path.dirname(__file__), fp.readline().strip())
         # All other order lines are tetris and fiber info
         lines = fp.readlines()
     lines = list(map(lambda x: x.strip().split(), lines))
     lines = Table(rows=lines, names=["tetris","fiber"])
-    return Nobj, Nord, ordlist, ordwaveranges, ordpixranges, lines
+    return Nobj, Nord, ordlist, ordwaveranges, ordpixranges, line_identifications, lines
 
 def m2fs_get_trace_fnames(fname):
     assert fname.endswith(".fits")
@@ -1216,6 +1218,7 @@ def make_ghlb_feature_matrix(iobj, iord, L, ys, Sprime,
     Nparam = NL*NH
     L = np.ravel(L)
     ys = np.ravel(ys)
+    Sprime = np.ravel(Sprime)
     assert len(L)==len(ys)
     assert len(L)==len(Sprime)
     N = len(L)
@@ -1532,7 +1535,7 @@ def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma
             print("Saved figure: {:.1f}s".format(time.time()-start2))
             plt.close(fig)
     print("Finished huge fit: {:.1f}s".format(time.time()-start))
-    np.save(outfname1, [alloutput, used, modeled_flat])
+    np.save(outfname1, [alloutput, used, modeled_flat, [yscut, deg, sigma]])
     write_fits_one("{}/{}_GHLB_used.fits".format(outdir, name), used, header)
     write_fits_one("{}/{}_GHLB_model.fits".format(outdir, name), modeled_flat, header)
     write_fits_one("{}/{}_GHLB_resid.fits".format(outdir, name), R-modeled_flat, header)
@@ -1560,3 +1563,245 @@ def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma
         plt.close(fig)
     print("Total time: {:.1f}".format(time.time()-start))
     
+def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
+                     Npix=2048, make_plot=True):
+    """
+    Nextract: total 2xNextract+1 pixels will be added together
+    """
+    
+    start = time.time()
+    outdir = os.path.dirname(objfname)
+    assert objfname.endswith(".fits")
+    name = os.path.basename(objfname)[:-5]
+    outfname = os.path.join(outdir,name+"_sum_specs.fits")
+    
+    R, eR, header = read_fits_two(objfname)
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    
+    dy = np.arange(-Nextract, Nextract+1)
+    offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
+    
+    # Wave, Flux, Err
+    outspec = np.zeros((Nobj,Norder,Npix,3))
+    used = np.zeros(R.shape, dtype=int)
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
+            Yarr = tracefn(iobj, iord, Xarr)
+            Larr = Lfunc(iobj, iord, Xarr, Yarr)
+            outspec[iobj, iord, Xarr, 0] = Larr
+            
+            X_to_get = np.vstack([Xarr for _ in dy]).T
+            Y_to_get = (offsets[Xarr,:] + Yarr[:,np.newaxis]).astype(int)
+            assert np.all(X_to_get.shape == Y_to_get.shape)
+            data_to_sum =  R[X_to_get, Y_to_get]
+            vars_to_sum = eR[X_to_get, Y_to_get]**2.
+            outspec[iobj, iord, Xarr, 1] = np.sum(data_to_sum, axis=1)
+            outspec[iobj, iord, Xarr, 2] = np.sqrt(np.sum(vars_to_sum, axis=1))
+            
+            used[X_to_get, Y_to_get] += 1
+    
+    header["NEXTRACT"] = Nextract
+    header.add_history("m2fs_sum_extract: sum extraction with window 2*{}+1".format(Nextract))
+    header.add_history("m2fs_sum_extract: flat: {}".format(flatfname))
+    header.add_history("m2fs_sum_extract: arc: {}".format(arcfname))
+    trueord = fiberconfig[2]
+    for iord in range(Norder):
+        header["ECORD{}".format(iord)] = trueord[iord]
+    lines = fiberconfig[-1]
+    for iobj in range(Nobj):
+        fibnum = "".join(lines[iobj])
+        header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    
+    
+    write_fits_one(outfname, outspec, header)
+    #hdu1 = fits.PrimaryHDU(d1.T, h)
+    #hdulist = fits.HDUList([hdu1])
+    #hdulist.writeto(outfname, overwrite=True)
+    
+    print("Sum extract of {} took {:.1f}".format(name, time.time()-start))
+    if make_plot:
+        fig, ax = plt.subplots(figsize=(8,6),subplot_kw={"aspect":1})
+        im = ax.imshow(used.T, origin="lower",interpolation='none')
+        fig.colorbar(im)
+        fig.savefig("{}/{}_sum_usedpix.png".format(outdir,name))
+        
+def m2fs_horne_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
+                       maxiter=5, sigma=5,
+                       Npix=2048, make_plot=True):
+    """
+    Nextract: total 2xNextract+1 pixels will be added together
+    """
+    
+    start = time.time()
+    outdir = os.path.dirname(objfname)
+    assert objfname.endswith(".fits")
+    name = os.path.basename(objfname)[:-5]
+    outfname = os.path.join(outdir,name+"_horne_specs.fits")
+    outfname_resid = os.path.join(outdir,name+"_horne_resid.fits")
+    
+    R, eR, header = read_fits_two(objfname)
+    F, eF, headerF = read_fits_two(flatfname)
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    
+    dy = np.arange(-Nextract, Nextract+1)
+    offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
+    
+    # Wave, Flux, Err
+    outspec = np.zeros((Nobj,Norder,Npix,3))
+    used = np.zeros(R.shape, dtype=int)
+    model = np.zeros_like(R)
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
+            Yarr = tracefn(iobj, iord, Xarr)
+            Larr = Lfunc(iobj, iord, Xarr, Yarr)
+            # Approximate X as constant wavelength over the full Y profile
+            outspec[iobj, iord, Xarr, 0] = Larr
+            
+            X_to_get = np.vstack([Xarr for _ in dy]).T
+            Y_to_get = (offsets[Xarr,:] + Yarr[:,np.newaxis]).astype(int)
+            assert np.all(X_to_get.shape == Y_to_get.shape)
+            # Get data
+            data_to_sum =  R[X_to_get, Y_to_get]
+            errs_to_sum = eR[X_to_get, Y_to_get]
+            ivar_to_sum = errs_to_sum**-2.
+            ivar_to_sum[~np.isfinite(ivar_to_sum)] = 0.
+            # Get profile
+            flat_to_sum =  F[X_to_get, Y_to_get] 
+            flat_to_sum[flat_to_sum < 0] = 0.
+            flat_to_sum[~np.isfinite(flat_to_sum)] = 0.
+            flat_to_sum = flat_to_sum/np.nansum(flat_to_sum, axis=1)[:,np.newaxis]
+            
+            specest = np.sum(data_to_sum, axis=1)
+            mask = np.ones_like(data_to_sum)
+            # object profile and mask
+            lastNmask = 0
+            for iter in range(maxiter):
+                ## TODO the problem is that the initial estimate is bad
+                mask = np.abs(specest[:,np.newaxis] * flat_to_sum - data_to_sum) < sigma * errs_to_sum
+                specest = np.sum(mask * flat_to_sum * data_to_sum * ivar_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
+                ## TODO recalculate pixel variances?
+                Nmask = np.sum(mask)
+                if lastNmask == Nmask: break
+                lastNmask = Nmask
+            varest = np.sum(mask * flat_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
+            outspec[iobj, iord, Xarr, 1] = specest
+            outspec[iobj, iord, Xarr, 2] = varest
+            model[X_to_get, Y_to_get] += flat_to_sum * specest[:,np.newaxis]
+    header["NEXTRACT"] = Nextract
+    header.add_history("m2fs_horne_extract: horne extraction with window 2*{}+1".format(Nextract))
+    header.add_history("m2fs_horne_extract: flat: {}".format(flatfname))
+    header.add_history("m2fs_horne_extract: arc: {}".format(arcfname))
+    trueord = fiberconfig[2]
+    for iord in range(Norder):
+        header["ECORD{}".format(iord)] = trueord[iord]
+    lines = fiberconfig[-1]
+    for iobj in range(Nobj):
+        fibnum = "".join(lines[iobj])
+        header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    
+    write_fits_one(outfname, outspec, header)
+    write_fits_one(outfname_resid, R - model, header)
+
+    print("Horne extract of {} took {:.1f}".format(name, time.time()-start))
+
+def m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract,
+                            maxiter=5, sigma=5,
+                            Npix=2048, make_plot=True):
+    """
+    Does a Horne extraction using the GHLB spatial profile fit from the flat.
+    Squashes all X-pixels to a single wavelength.
+    Still need to specify a window Nextract within which to use the extraction,
+    but you can be more generous because the GHLB fit is better.
+    """
+    
+    start = time.time()
+    outdir = os.path.dirname(objfname)
+    assert objfname.endswith(".fits")
+    name = os.path.basename(objfname)[:-5]
+    outfname = os.path.join(outdir,name+"_horneghlb_specs.fits")
+    outfname_resid = os.path.join(outdir,name+"_horneghlb_resid.fits")
+    
+    R, eR, header = read_fits_two(objfname)
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    
+    ghlb_data_path = os.path.join(os.path.dirname(flatfname2), os.path.basename(flatfname2)[:-5]+"_GHLB.npy")
+    ghlb_data = np.load(ghlb_data_path)
+    
+    dy = np.arange(-Nextract, Nextract+1)
+    offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
+    
+    # Wave, Flux, Err
+    outspec = np.zeros((Nobj,Norder,Npix,3))
+    used = np.zeros(R.shape, dtype=int)
+    model = np.zeros_like(R)
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
+            Yarr = tracefn(iobj, iord, Xarr)
+            # The Horne extraction approximation is that wavelength is constant for fixed X
+            Larr = Lfunc(iobj, iord, Xarr, Yarr)
+            outspec[iobj, iord, Xarr, 0] = Larr
+            
+            X_to_get = np.vstack([Xarr for _ in dy]).T
+            Y_to_get = (offsets[Xarr,:] + Yarr[:,np.newaxis]).astype(int)
+            assert np.all(X_to_get.shape == Y_to_get.shape)
+            # Get data
+            data_to_sum =  R[X_to_get, Y_to_get]
+            errs_to_sum = eR[X_to_get, Y_to_get]
+            ivar_to_sum = errs_to_sum**-2.
+            ivar_to_sum[~np.isfinite(ivar_to_sum)] = 0.
+            # Get profile and hold fixed
+            itrace = iord + iobj*Norder
+            pfit, mask, indices, Sfunc, Pfit = ghlb_data[0][itrace]
+            L = Lfunc(iobj,iord,X_to_get,Y_to_get)
+            ys = ysfunc(iobj,iord,X_to_get,Y_to_get)
+            S = np.ones_like(L)
+            ## HACK HARDCODED TODO SAVE/READ DEGREE FROM THE GHLB OUTPUT
+            deg = [2,10] # ghlb_data[3][1]
+            Xmat = make_ghlb_feature_matrix(iobj, iord, L, ys, S,
+                                            fiberconfig, deg)
+            flat_to_sum = Xmat.dot(pfit).reshape(L.shape)
+            flat_to_sum = flat_to_sum/np.sum(flat_to_sum, axis=1)[:,np.newaxis]
+            
+            specest = np.sum(data_to_sum, axis=1)
+            mask = np.ones_like(data_to_sum)
+            # object profile and mask
+            lastNmask = 0
+            for iter in range(maxiter):
+                ## TODO the problem is that the initial estimate is bad
+                mask = np.abs(specest[:,np.newaxis] * flat_to_sum - data_to_sum) < sigma * errs_to_sum
+                specest = np.sum(mask * flat_to_sum * data_to_sum * ivar_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
+                ## TODO recalculate pixel variances?
+                Nmask = np.sum(mask)
+                if lastNmask == Nmask: break
+                lastNmask = Nmask
+            varest = np.sum(mask * flat_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
+            outspec[iobj, iord, Xarr, 1] = specest
+            outspec[iobj, iord, Xarr, 2] = varest
+            model[X_to_get, Y_to_get] += flat_to_sum * specest[:,np.newaxis]
+    
+    header["NEXTRACT"] = Nextract
+    header.add_history("m2fs_horne_ghlb_extract: horne extraction with window 2*{}+1 and GHLB profile".format(Nextract))
+    header.add_history("m2fs_horne_ghlb_extract: flat: {}".format(flatfname))
+    header.add_history("m2fs_horne_ghlb_extract: flatprofile: {}".format(flatfname2))
+    header.add_history("m2fs_horne_ghlb_extract: arc: {}".format(arcfname))
+    trueord = fiberconfig[2]
+    for iord in range(Norder):
+        header["ECORD{}".format(iord)] = trueord[iord]
+    lines = fiberconfig[-1]
+    for iobj in range(Nobj):
+        fibnum = "".join(lines[iobj])
+        header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    
+    write_fits_one(outfname, outspec, header)
+    write_fits_one(outfname_resid, R - model, header)
+    
+    print("Horne GHLB extract of {} took {:.1f}".format(name, time.time()-start))

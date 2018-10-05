@@ -12,9 +12,10 @@ from m2fs_utils import m2fs_make_master_flat, m2fs_trace_orders
 from m2fs_utils import m2fs_wavecal_find_sources_one_arc
 from m2fs_utils import m2fs_wavecal_identify_sources_one_arc
 from m2fs_utils import m2fs_wavecal_fit_solution_one_arc
-from m2fs_utils import m2fs_get_pixel_functions
+from m2fs_utils import m2fs_get_pixel_functions, m2fs_load_trace_function
 from m2fs_utils import m2fs_subtract_scattered_light
-from m2fs_utils import m2fs_ghlb_extract
+from m2fs_utils import m2fs_ghlb_extract, m2fs_sum_extract, m2fs_horne_extract
+from m2fs_utils import m2fs_horne_ghlb_extract#, m2fs_spline_ghlb_extract
 
 #################################################
 # Tools to see if you have already done a step
@@ -129,14 +130,6 @@ def m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig):
 def m2fs_wavecal_find_sources(dbname, workdir, calibconfig):
     if check_finished(workdir, "wavecal-findsources"): return
     ## Get list of arcs to process
-    #tab = load_db(dbname)
-    #filter = np.unique(tab["FILTER"])[0]
-    #config = np.unique(tab["CONFIG"])[0]
-    #arctab = tab[tab["EXPTYPE"]=="Comp"]
-    #print("Found {} arc frames".format(len(arctab)))
-    #fnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
-    
-    ## Get list of arcs to process
     objnums = get_obj_nums(calibconfig)
     fnames = [get_arc_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
     
@@ -151,7 +144,7 @@ def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig):
     if check_finished(workdir, "wavecal-identifysources"): return
     
     ## TODO use fiberconfig to get this somehow!!!
-    identified_sources = ascii.read("data/Mg_Wide_r_id.txt")
+    identified_sources = ascii.read(fiberconfig[5])
     
     ## Get list of arcs to process
     #tab = load_db(dbname)
@@ -239,6 +232,37 @@ def m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig, calibconfig):
     print("Fitting GHLB to flats took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "flat-ghlb")
 
+def m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract):
+    """
+    Extract within a simple sum aperture of 2*Nextract+1 pixels around the trace
+    """
+    if check_finished(workdir, "extract-sum"): return
+    
+    objnums = get_obj_nums(calibconfig)
+    objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
+        m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract, make_plot=True)
+    
+    mark_finished(workdir, "extract-sum")
+
+def m2fs_extract_horne_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract):
+    """
+    Extract within a simple sum aperture of 2*Nextract+1 pixels around the trace
+    """
+    if check_finished(workdir, "extract-horne"): return
+    
+    objnums = get_obj_nums(calibconfig)
+    objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
+        m2fs_horne_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract, make_plot=True)
+    
+    mark_finished(workdir, "extract-horne")
+
+
 #################################################
 # script to run
 #################################################
@@ -279,8 +303,38 @@ if __name__=="__main__":
     m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig, calibconfig)
     
     ### Scattered light subtraction
-    m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)    
+    m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)
     
+    ### Simple extraction
+    m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4)
+    m2fs_extract_horne_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4)
+    ### GHLB profile extraction
+
+    objnums = get_obj_nums(calibconfig)
+    objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    flatfnames2 = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    start = time.time()
+    done = []
+    for flatfname, flatfname2, arcfname in zip(flatfnames, flatfnames2, arcfnames):
+        if flatfname in done: continue
+        #if os.path.exists(flatfname2):
+        #    print("{} already exists, assuming the GHLB extraction is already run".format(flatfname2))
+        #    continue
+        m2fs_subtract_scattered_light(flatfname, flatfname, arcfname, fiberconfig, 
+                                      sigma=5.0,deg=[2,2])
+        m2fs_ghlb_extract(flatfname2, flatfname, arcfname, fiberconfig, yscut=2.5, deg=[2,10], sigma=5.0,
+                          make_plot=True, make_obj_plots=False)
+        done.append(flatfname)
+    print("Scatlight and fitting GHLB to flats took {:.1f}".format(time.time()-start))
+    start = time.time()
+    for objfname, flatfname, flatfname2, arcfname in zip(objfnames, flatfnames, flatfnames2, arcfnames):
+        m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=5)
+    print("Horne GHLB extract took {:.1f}".format(time.time()-start))
+
+def m2fs_frame_by_frame_ghlb_extract(dbname, workdir, fiberconfig, calibconfig):
+    """
     ### Frame-by-frame extraction
     ## Fit GHLB for each object individually
     ## This does NOT really work: the sky fibers are so faint that they have a really bad GHLB profile
@@ -288,6 +342,7 @@ if __name__=="__main__":
     ## (The objects themselves seem fine!)
     ## Also, note that extended outliers (cosmic rays along a trace, bad lines/columns) are not removed
     ## Hopefully this can be remedied by fitting multiple exposures
+    """
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
     flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
@@ -305,8 +360,7 @@ def tmp():
     ## Fit profile to flats
     ## TODO input a file that associates objects, flats, and arcs
     m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig)
-    ## TODO apply GHLB profiles to extract objects, including throughput correction
-    
+    ## TODO apply flat GHLB profiles to extract objects, including throughput correction
     
     # M2FS profile
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatnames[-1],arcnames[-1],fiberconfig)
