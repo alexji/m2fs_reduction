@@ -1238,13 +1238,16 @@ def make_ghlb_feature_matrix(iobj, iord, L, ys, Sprime,
             polygrid[:,b+a*NH] = La[a]*Hb[b]
     return polygrid
 
-def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1):
+def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1, knots=None):
     """ R(L,y) = S(L) * P(L,y) """
     RP = R/P
     W = (P/eR)**2.
     W = W/W.sum()
-    Lmin, Lmax = L.min()+dx, L.max()-dx
-    knots = np.linspace(Lmin, Lmax, Npix)[1:-1] # LSQUnivariateSpline adds two end knots
+    if knots is None:
+        Lmin, Lmax = L.min()+dx, L.max()-dx
+        knots = np.linspace(Lmin, Lmax, Npix)[1:-1] # LSQUnivariateSpline adds two end knots
+    else:
+        knots = knots[1:-1]
     ## Fit B Spline
     iisort = np.argsort(L)
     Sfunc = interpolate.LSQUnivariateSpline(L[iisort], RP[iisort], knots, W[iisort])
@@ -1255,8 +1258,8 @@ def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
     P = np.exp(-ys**2/2.)
     return fit_S_with_profile(P, L, R, eR, Npix)
     
-def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, 
-                                  badcols=[], yscut=2.0, deg=[2,2], sigma=5.0, maxiter=10,
+def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixcut,
+                                  badcols=[], deg=[2,2], sigma=3.0, maxiter=10,
                                   verbose=True, make_plot=True):
     """
     The basic idea is to mask out the defined extraction regions in the 2D image,
@@ -1269,19 +1272,29 @@ def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig,
     outname = name+"s"
     outfname = os.path.join(outdir, outname+".fits")
     
-    ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     R, eR, header = read_fits_two(fname)
     shape = R.shape
     X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
     used = np.zeros_like(R, dtype=bool)
     
+    #ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
+    Npixcut = int(Npixcut)
+    dy = np.arange(-Npixcut, Npixcut+1)
+    Npix = R.shape[0]
+    offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    
     # Find all pixels used in extraction
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
     for iobj in range(Nobj):
         for iord in range(Norder):
-            ys = ysfunc(iobj, iord, X, Y)
-            used[np.abs(ys) < yscut] = True
-    print("m2fs_subtract_scattered_light: took {:.1f}s to find extracted pixels".format(time.time()-start))
+            #ys = ysfunc(iobj, iord, X, Y)
+            Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
+            Yarr = tracefn(iobj, iord, Xarr)
+            X_to_get = np.vstack([Xarr for _ in dy]).T
+            Y_to_get = (offsets[Xarr,:] + Yarr[:,np.newaxis]).astype(int)
+            used[X_to_get, Y_to_get] = True
+    #print("m2fs_subtract_scattered_light: took {:.1f}s to find extracted pixels".format(time.time()-start))
     
     scatlight = R.copy()
     scatlight[used] = np.nan
@@ -1764,8 +1777,7 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconf
             L = Lfunc(iobj,iord,X_to_get,Y_to_get)
             ys = ysfunc(iobj,iord,X_to_get,Y_to_get)
             S = np.ones_like(L)
-            ## HACK HARDCODED TODO SAVE/READ DEGREE FROM THE GHLB OUTPUT
-            deg = [2,10] # ghlb_data[3][1]
+            deg = ghlb_data[3][1]
             Xmat = make_ghlb_feature_matrix(iobj, iord, L, ys, S,
                                             fiberconfig, deg)
             flat_to_sum = Xmat.dot(pfit).reshape(L.shape)
@@ -1776,7 +1788,6 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconf
             # object profile and mask
             lastNmask = 0
             for iter in range(maxiter):
-                ## TODO the problem is that the initial estimate is bad
                 mask = np.abs(specest[:,np.newaxis] * flat_to_sum - data_to_sum) < sigma * errs_to_sum
                 specest = np.sum(mask * flat_to_sum * data_to_sum * ivar_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
                 ## TODO recalculate pixel variances?
@@ -1805,3 +1816,101 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconf
     write_fits_one(outfname_resid, R - model, header)
     
     print("Horne GHLB extract of {} took {:.1f}".format(name, time.time()-start))
+
+def m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract,
+                             maxiter=5, sigma=5,
+                             Npix=2048, make_plot=True):
+    """
+    Does a spline fit extraction using the GHLB spatial profile fit from the flat.
+    Still need to specify a window Nextract within which to use the extraction.
+    """
+    
+    start = time.time()
+    outdir = os.path.dirname(objfname)
+    assert objfname.endswith(".fits")
+    name = os.path.basename(objfname)[:-5]
+    outfname = os.path.join(outdir,name+"_splineghlb_specs.fits")
+    outfname_resid = os.path.join(outdir,name+"_splineghlb_resid.fits")
+    
+    R, eR, header = read_fits_two(objfname)
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    
+    ghlb_data_path = os.path.join(os.path.dirname(flatfname2), os.path.basename(flatfname2)[:-5]+"_GHLB.npy")
+    ghlb_data = np.load(ghlb_data_path)
+    
+    dy = np.arange(-Nextract, Nextract+1)
+    offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
+    
+    # Wave, Flux, Err
+    outspec = np.zeros((Nobj,Norder,Npix,3))
+    used = np.zeros(R.shape, dtype=int)
+    model = np.zeros_like(R)
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
+            Yarr = tracefn(iobj, iord, Xarr)
+            # This is the L at which we will evaluate our final spline fit
+            Larr = Lfunc(iobj, iord, Xarr, Yarr)
+            outspec[iobj, iord, Xarr, 0] = Larr
+            
+            X_to_get = np.vstack([Xarr for _ in dy]).T
+            Y_to_get = (offsets[Xarr,:] + Yarr[:,np.newaxis]).astype(int)
+            assert np.all(X_to_get.shape == Y_to_get.shape)
+            # Get data
+            data_to_sum =  R[X_to_get, Y_to_get]
+            errs_to_sum = eR[X_to_get, Y_to_get]
+            ivar_to_sum = errs_to_sum**-2.
+            ivar_to_sum[~np.isfinite(ivar_to_sum)] = 0.
+            # Get profile and hold fixed
+            itrace = iord + iobj*Norder
+            pfit, mask, indices, Sfunc, Pfit = ghlb_data[0][itrace]
+            L = Lfunc(iobj,iord,X_to_get,Y_to_get)
+            ys = ysfunc(iobj,iord,X_to_get,Y_to_get)
+            S = np.ones_like(L)
+            deg = ghlb_data[3][1]
+            Xmat = make_ghlb_feature_matrix(iobj, iord, L, ys, S,
+                                            fiberconfig, deg)
+            flat_to_sum = Xmat.dot(pfit).reshape(L.shape)
+            flat_to_sum = flat_to_sum/np.sum(flat_to_sum, axis=1)[:,np.newaxis]
+            
+            specestfunc = fit_S_with_profile(flat_to_sum.ravel(), L.ravel(), data_to_sum.ravel(), errs_to_sum.ravel(), 0,
+                                             knots=Larr)
+            specest = specestfunc(Larr)
+            #specest = np.sum(data_to_sum, axis=1)
+            mask = np.ones_like(data_to_sum)
+            # object profile and mask
+            lastNmask = 0
+            for iter in range(maxiter):
+                mask = np.abs(specest[:,np.newaxis] * flat_to_sum - data_to_sum) < sigma * errs_to_sum
+                #specest = np.sum(mask * flat_to_sum * data_to_sum * ivar_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
+                specestfunc = fit_S_with_profile(flat_to_sum[mask].ravel(), L[mask].ravel(), data_to_sum[mask].ravel(), 
+                                                 errs_to_sum[mask].ravel(), 0, knots=Larr)
+                specest = specestfunc(Larr)
+                ## TODO recalculate pixel variances?
+                Nmask = np.sum(mask)
+                if lastNmask == Nmask: break
+                lastNmask = Nmask
+            varest = np.sum(mask * flat_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
+            outspec[iobj, iord, Xarr, 1] = specest
+            outspec[iobj, iord, Xarr, 2] = varest
+            model[X_to_get, Y_to_get] += flat_to_sum * specest[:,np.newaxis]
+    
+    header["NEXTRACT"] = Nextract
+    header.add_history("m2fs_spline_ghlb_extract: spline extraction with window 2*{}+1 and GHLB profile".format(Nextract))
+    header.add_history("m2fs_spline_ghlb_extract: flat: {}".format(flatfname))
+    header.add_history("m2fs_spline_ghlb_extract: flatprofile: {}".format(flatfname2))
+    header.add_history("m2fs_spline_ghlb_extract: arc: {}".format(arcfname))
+    trueord = fiberconfig[2]
+    for iord in range(Norder):
+        header["ECORD{}".format(iord)] = trueord[iord]
+    lines = fiberconfig[-1]
+    for iobj in range(Nobj):
+        fibnum = "".join(lines[iobj])
+        header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    
+    write_fits_one(outfname, outspec, header)
+    write_fits_one(outfname_resid, R - model, header)
+    
+    print("Spline GHLB extract of {} took {:.1f}".format(name, time.time()-start))

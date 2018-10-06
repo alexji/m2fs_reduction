@@ -15,7 +15,7 @@ from m2fs_utils import m2fs_wavecal_fit_solution_one_arc
 from m2fs_utils import m2fs_get_pixel_functions, m2fs_load_trace_function
 from m2fs_utils import m2fs_subtract_scattered_light
 from m2fs_utils import m2fs_ghlb_extract, m2fs_sum_extract, m2fs_horne_extract
-from m2fs_utils import m2fs_horne_ghlb_extract#, m2fs_spline_ghlb_extract
+from m2fs_utils import m2fs_horne_ghlb_extract, m2fs_spline_ghlb_extract
 
 #################################################
 # Tools to see if you have already done a step
@@ -189,7 +189,7 @@ def m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig, calibconfig):
     print("Fitting wavelength solutions took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "wavecal-fitsolution")
 
-def m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig):
+def m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig, Npixcut=13, sigma=3.0, deg=[5,5]):
     if check_finished(workdir, "scatlight"): return
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
@@ -198,8 +198,10 @@ def m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig):
     
     start = time.time()
     for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
-        m2fs_subtract_scattered_light(objfname, flatfname, arcfname, fiberconfig, 
-                                      sigma=5.0,deg=[2,2])
+        m2fs_subtract_scattered_light(objfname, flatfname, arcfname, fiberconfig, Npixcut,
+                                      sigma=sigma, deg=deg)
+        m2fs_subtract_scattered_light(flatfname, flatfname, arcfname, fiberconfig, Npixcut,
+                                      sigma=sigma, deg=deg)
     print("Scattered light subtraction took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "scatlight")
 
@@ -234,7 +236,7 @@ def m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig, calibconfig):
 
 def m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract):
     """
-    Extract within a simple sum aperture of 2*Nextract+1 pixels around the trace
+    Simple sum extraction within an aperture of 2*Nextract+1 pixels around the trace
     """
     if check_finished(workdir, "extract-sum"): return
     
@@ -249,7 +251,7 @@ def m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextrac
 
 def m2fs_extract_horne_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract):
     """
-    Extract within a simple sum aperture of 2*Nextract+1 pixels around the trace
+    Horne extraction using flat as object profile for 2*Nextract+1 pixels around the trace
     """
     if check_finished(workdir, "extract-horne"): return
     
@@ -261,6 +263,7 @@ def m2fs_extract_horne_aperture(dbname, workdir, fiberconfig, calibconfig, Nextr
         m2fs_horne_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract, make_plot=True)
     
     mark_finished(workdir, "extract-horne")
+
 
 
 #################################################
@@ -308,8 +311,8 @@ if __name__=="__main__":
     ### Simple extraction
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4)
     m2fs_extract_horne_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4)
-    ### GHLB profile extraction
 
+    ### GHLB profile extraction
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
     flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
@@ -317,21 +320,20 @@ if __name__=="__main__":
     arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     start = time.time()
     done = []
-    for flatfname, flatfname2, arcfname in zip(flatfnames, flatfnames2, arcfnames):
-        if flatfname in done: continue
-        #if os.path.exists(flatfname2):
-        #    print("{} already exists, assuming the GHLB extraction is already run".format(flatfname2))
-        #    continue
-        m2fs_subtract_scattered_light(flatfname, flatfname, arcfname, fiberconfig, 
-                                      sigma=5.0,deg=[2,2])
-        m2fs_ghlb_extract(flatfname2, flatfname, arcfname, fiberconfig, yscut=2.5, deg=[2,10], sigma=5.0,
-                          make_plot=True, make_obj_plots=False)
-        done.append(flatfname)
-    print("Scatlight and fitting GHLB to flats took {:.1f}".format(time.time()-start))
+    #for flatfname, flatfname2, arcfname in zip(flatfnames, flatfnames2, arcfnames):
+    #    if flatfname in done: continue
+    #    m2fs_ghlb_extract(flatfname2, flatfname, arcfname, fiberconfig, yscut=2.5, deg=[0,10], sigma=5.0,
+    #                      make_plot=True, make_obj_plots=True)
+    #    done.append(flatfname)
+    #print("Fitting GHLB to flats took {:.1f}".format(time.time()-start))
+    #start = time.time()
+    #for objfname, flatfname, flatfname2, arcfname in zip(objfnames, flatfnames, flatfnames2, arcfnames):
+    #    m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=5)
+    #print("Horne GHLB extract took {:.1f}".format(time.time()-start))
     start = time.time()
     for objfname, flatfname, flatfname2, arcfname in zip(objfnames, flatfnames, flatfnames2, arcfnames):
-        m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=5)
-    print("Horne GHLB extract took {:.1f}".format(time.time()-start))
+        m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=5)
+    print("Spline GHLB extract took {:.1f}".format(time.time()-start))
 
 def m2fs_frame_by_frame_ghlb_extract(dbname, workdir, fiberconfig, calibconfig):
     """
