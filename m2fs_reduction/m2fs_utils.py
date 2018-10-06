@@ -1641,7 +1641,7 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
         fig.colorbar(im)
         fig.savefig("{}/{}_sum_usedpix.png".format(outdir,name))
         
-def m2fs_horne_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
+def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
                        maxiter=5, sigma=5,
                        Npix=2048, make_plot=True):
     """
@@ -1652,8 +1652,8 @@ def m2fs_horne_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     outdir = os.path.dirname(objfname)
     assert objfname.endswith(".fits")
     name = os.path.basename(objfname)[:-5]
-    outfname = os.path.join(outdir,name+"_horne_specs.fits")
-    outfname_resid = os.path.join(outdir,name+"_horne_resid.fits")
+    outfname = os.path.join(outdir,name+"_horneflat_specs.fits")
+    outfname_resid = os.path.join(outdir,name+"_horneflat_resid.fits")
     
     R, eR, header = read_fits_two(objfname)
     F, eF, headerF = read_fits_two(flatfname)
