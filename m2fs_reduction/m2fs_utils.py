@@ -1000,8 +1000,8 @@ def m2fs_wavecal_fit_solution_one_arc(fname, workdir, fiberconfig,
     
     ## TODO GET ALL THESE FROM FIBERCONFIG
     Nobj, Norder, trueord = fiberconfig[0], fiberconfig[1], fiberconfig[2]
-     
-   ## Construct feature matrix to fit
+    
+    ## Construct feature matrix to fit
     Xmat = make_wavecal_feature_matrix(data["iobj"],data["iorder"],data["X"],data["Y"],
                                        Nobj, trueord, Xmin, Xmax, Ymin, Ymax, deg)
     good = np.ones(len(Xmat), dtype=bool)
@@ -1259,7 +1259,7 @@ def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
     return fit_S_with_profile(P, L, R, eR, Npix)
     
 def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixcut,
-                                  badcols=[], deg=[2,2], sigma=3.0, maxiter=10,
+                                  badcols=[], deg=[5,5], sigma=3.0, maxiter=10,
                                   verbose=True, make_plot=True):
     """
     The basic idea is to mask out the defined extraction regions in the 2D image,
