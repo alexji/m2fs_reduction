@@ -8,7 +8,7 @@ Under development.
 
 With major assistance from Dan Kelson (Carnegie Observatories).
 
-Including some code adpated from T. Hansen, J. Simon, G. Blanc
+Including some code adapted from T. Hansen, J. Simon, G. Blanc
 
 # Requirements
 * Attempted to be python 2/3 compatible, but only tested in python 3.6
@@ -30,6 +30,7 @@ Including some code adpated from T. Hansen, J. Simon, G. Blanc
 - [ ] refactor algorithm parameters better
 - [ ] reduction configuration parameter file
 - [ ] database file example
+- [ ] improve GHLB profiles in flat, still not perfect (maybe should use master flat for profile, and individual flats for trace?)
 
 ### Wish list
 - [ ] CPD to match pre-identified arcs to actual arcs
