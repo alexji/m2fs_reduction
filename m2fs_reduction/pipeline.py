@@ -312,12 +312,17 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
 #################################################
 if __name__=="__main__":
     start = time.time()
-    dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
-    workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
+    #dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
+    #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
+    #calibconfigname = "nov2017run.txt"
+    #fiberconfigname = "data/Mg_wide_r.txt"
+    dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
+    workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
     calibconfigname = "nov2017run.txt"
-    fiberconfigname = "data/Mg_wide_r.txt"
+    fiberconfigname = "data/Bulge_GC1_b.txt"
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
+    assert os.path.exists(calibconfigname)
     assert os.path.exists(fiberconfigname)
     
     tab = load_db(dbname)
@@ -337,12 +342,15 @@ if __name__=="__main__":
     ### Prep data
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
+
     ### Trace flat
     m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig)
     
     ### M2FS wavecal
     ## Find sources in 2D arc spectrum (currently a separate step running sextractor)
     m2fs_wavecal_find_sources(dbname, workdir, calibconfig)
+    
+def tmp():
     # NOTE: IF AN ARC HAS NOT BEEN IDENTIFIED, IT NEEDS TO BE DONE MANUALLY NOW
     ## Identify features in 2D spectrum with coherent point drift
     m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig)

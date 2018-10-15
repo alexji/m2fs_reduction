@@ -647,9 +647,18 @@ def m2fs_trace_orders(fname, fiberconfig,
         ix2 = int(np.ceil(peak1[i]+dy/2.))+1
         auxx = yarr[ix1:ix2]
         auxy = auxdata[ix1:ix2]
-        coef = gaussfit(auxx, auxy, [auxdata[peak1[i]], peak1[i], 2, thresh/2.])
+        coef = gaussfit(auxx, auxy, [auxdata[peak1[i]], peak1[i], 2, thresh/2.], maxfev=99999)
         peak[i] = coef[1]
-    assert npeak==expected_fibers
+    if npeak != expected_fibers:
+        print("Npeak {} != Expected peaks {}, making plot to show peaks".format(npeak,expected_fibers))
+        plt.plot(auxdata,color="k")
+        for i in range(npeak):
+            plt.axvline(peak[i], linestyle=':', linewidth=1, color='r')
+        plt.axhline(thresh)
+        plt.ylim(0, np.nanmax(auxdata)+10)
+        plt.show()
+        raise ValueError
+    assert npeak==expected_fibers, (npeak, expected_fibers)
     # TODO allow some interfacing of the parameters and plotting
     
     ## FIRST TRACE: do in windows
@@ -1914,3 +1923,37 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fibercon
     write_fits_one(outfname_resid, R - model, header)
     
     print("Spline GHLB extract of {} took {:.1f}".format(name, time.time()-start))
+
+def quick_1d_extract(objfname, flatfname, fiberconfig, outfname=None, Nextract=4, 
+                     make_plot=False, **kwargs):
+    """
+    Trace the flat and aperture sum extract flux vs pixel, saving as multispec.
+    Use e.g. for getting an initial arc identification, or sanity/improvement checks.
+    """
+    if outfname is None:
+        outfname = os.path.join(os.path.dirname(objfname),os.path.basename(objfname)[:-5]+".1d.ms.fits")
+    ### Trace flat
+    R, eR, hR = read_fits_two(objfname)
+    F, eF, hF = read_fits_two(flatfname)
+    assert R.shape == F.shape
+    if not os.path.exists(m2fs_get_trace_fnames(flatfname)[0]): 
+        m2fs_trace_orders(flatfname, fiberconfig, make_plot=make_plot, **kwargs)
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)    
+    
+    Npix = R.shape[0]
+    dy = np.arange(-Nextract, Nextract+1)
+    offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    
+    ### Extract objects with sum extraction
+    onedarcs = np.zeros((Nobj*Norder, Npix))
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            itrace = iobj*Norder + iord
+            Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
+            Yarr = tracefn(iobj, iord, Xarr)
+            X_to_get = np.vstack([Xarr for _ in dy]).T
+            Y_to_get = (offsets[Xarr,:] + Yarr[:,np.newaxis]).astype(int)
+            data_to_sum =  R[X_to_get, Y_to_get]
+            onedarcs[itrace,Xarr] = np.sum(data_to_sum, axis=1)
+    make_multispec(outfname, [onedarcs.T], ["sum extract spectrum"])
