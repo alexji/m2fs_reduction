@@ -883,7 +883,10 @@ def m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources, ma
     distances, indexes = kdtree.query(identified_positions, distance_upper_bound=max_match_dist)
     finite = np.isfinite(distances)
     num_matched = np.sum(finite)
-    assert np.sum(finite) == len(np.unique(indexes[finite])), "Did not match identified sources uniquely!"
+    if np.sum(finite) != len(np.unique(indexes[finite])):
+        print("WARNING: Did not match identified sources uniquely to within {}!".format(max_match_dist))
+        print("Got {} distances, {} unique".format(np.sum(finite), len(np.unique(indexes[finite]))))
+        print("Just going to continue anyway")
     print("Matched {}/{} identified features".format(num_matched, len(finite)))
     
     ## Save out the data
@@ -1259,7 +1262,14 @@ def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1, knots=None):
         knots = knots[1:-1]
     ## Fit B Spline
     iisort = np.argsort(L)
-    Sfunc = interpolate.LSQUnivariateSpline(L[iisort], RP[iisort], knots, W[iisort])
+    try:
+        Sfunc = interpolate.LSQUnivariateSpline(L[iisort], RP[iisort], knots, W[iisort])
+    except Exception as e:
+        print(e)
+        for i in range(len(knots)-1):
+            if np.sum(np.logical_and(L >= knots[i], L < knots[i+1])) <= 0:
+                print("Bad knots: {:.3f}-{:.3f}".format(knots[i],knots[i+1]))
+        import pdb; pdb.set_trace()
     return Sfunc
 def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
     ii = np.abs(ys) < ysmax

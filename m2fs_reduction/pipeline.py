@@ -140,7 +140,7 @@ def m2fs_wavecal_find_sources(dbname, workdir, calibconfig):
     print("Finding all sources took {:.1f}s".format(time.time()-start))
     mark_finished(workdir, "wavecal-findsources")
     
-def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig):
+def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig, max_match_dist=2.0):
     if check_finished(workdir, "wavecal-identifysources"): return
     
     ## TODO use fiberconfig to get this somehow!!!
@@ -160,7 +160,7 @@ def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig):
     
     start = time.time()
     for fname in fnames:
-        m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources)
+        m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources, max_match_dist=max_match_dist)
     print("Identifying all sources took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "wavecal-identifysources")
 
@@ -342,7 +342,7 @@ if __name__=="__main__":
     ### Prep data
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
-
+    
     ### Trace flat
     m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig)
     
@@ -350,7 +350,6 @@ if __name__=="__main__":
     ## Find sources in 2D arc spectrum (currently a separate step running sextractor)
     m2fs_wavecal_find_sources(dbname, workdir, calibconfig)
     
-def tmp():
     # NOTE: IF AN ARC HAS NOT BEEN IDENTIFIED, IT NEEDS TO BE DONE MANUALLY NOW
     ## Identify features in 2D spectrum with coherent point drift
     m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig)
