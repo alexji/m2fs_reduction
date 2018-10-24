@@ -609,6 +609,7 @@ def m2fs_load_tracestd_function(flatname, fiberconfig):
     return tracestd_func
 
 def m2fs_trace_orders(fname, fiberconfig,
+                      midx=None,
                       nthresh=2.0, ystart=0, dx=20, dy=5, nstep=10, degree=5, ythresh=500,
                       trace_degree=None, stdev_degree=None,
                       make_plot=True):
@@ -617,7 +618,7 @@ def m2fs_trace_orders(fname, fiberconfig,
     """
     data, edata, header = read_fits_two(fname)
     nx, ny = data.shape
-    midx = round(nx/2.)
+    if midx is None: midx = round(nx/2.)
     thresh = nthresh*np.median(data)
     
     if trace_degree is None: trace_degree = degree
