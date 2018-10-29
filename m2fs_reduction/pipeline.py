@@ -16,6 +16,7 @@ from m2fs_utils import m2fs_get_pixel_functions, m2fs_load_trace_function
 from m2fs_utils import m2fs_subtract_scattered_light
 from m2fs_utils import m2fs_ghlb_extract, m2fs_sum_extract, m2fs_horne_flat_extract
 from m2fs_utils import m2fs_horne_ghlb_extract, m2fs_spline_ghlb_extract
+from m2fs_utils import quick_1d_extract
 
 #################################################
 # Tools to see if you have already done a step
@@ -41,7 +42,7 @@ def load_db(dbname, calibconfig=None):
     assert len(np.unique(tab["BIN"])) == 1, np.unique(tab["BIN"])
     assert len(np.unique(tab["SPEED"])) == 1, np.unique(tab["SPEED"])
     assert len(np.unique(tab["NAMP"])) == 1, np.unique(tab["NAMP"])
-    assert np.all([x in ["Dark","Comp","Flat","Object"] for x in tab["EXPTYPE"]])
+    assert np.all([x in ["Dark","Comp","Flat","Object","Thru"] for x in tab["EXPTYPE"]])
     if calibconfig is None:
         return tab
     else:
@@ -126,6 +127,8 @@ def m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig):
     for fname in np.unique(fnames):
         m2fs_trace_orders(fname, fiberconfig, make_plot=True)
     mark_finished(workdir, "traceflat")
+def m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname):
+    pass
 
 def m2fs_wavecal_find_sources(dbname, workdir, calibconfig):
     if check_finished(workdir, "wavecal-findsources"): return
@@ -316,10 +319,12 @@ if __name__=="__main__":
     #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
     #calibconfigname = "nov2017run.txt"
     #fiberconfigname = "data/Mg_wide_r.txt"
+    #throughput_fname = "./Mg_wide_r_throughput.npy"
     dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
     workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
     calibconfigname = "nov2017run.txt"
     fiberconfigname = "data/Bulge_GC1_b.txt"
+    throughput_fname = "./Bulge_GC1_b_throughput.npy"
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(calibconfigname)
@@ -342,7 +347,144 @@ if __name__=="__main__":
     ### Prep data
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
+
+    ### Throughput correction with twilight flats
+    #m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname)
+    Npixcut=13; sigma=3.0; deg=[5,5]
+    Nextract=4
+    ythresh=200; nthresh=1.9
+    from astropy.io import ascii, fits
+    from m2fs_utils import m2fs_get_trace_fnames
     
+    tab = load_db(dbname)
+    tab = tab[tab["EXPTYPE"]=="Thru"]
+    Nthru = len(tab)
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    ordpixranges = fiberconfig[4]
+    trueord = fiberconfig[2]
+    
+    allthrumat = np.zeros((Nthru, Nobj, Norder))
+    start = time.time()
+    for irow,row in enumerate(tab):
+        start2 = time.time()
+        thrufname = get_file(row["FILE"], workdir, "d")
+        thrufname_scat = get_file(row["FILE"], workdir, "ds")
+        print("--THRU: PROCESSING {}".format(thrufname))
+        # Trace, subtract scattered light
+        if not os.path.exists(m2fs_get_trace_fnames(thrufname)[0]): 
+            m2fs_trace_orders(thrufname, fiberconfig, make_plot=True, ythresh=ythresh, nthresh=nthresh)
+            m2fs_subtract_scattered_light(thrufname, thrufname, None, fiberconfig,
+                                          make_plot=True, Npixcut=Npixcut, sigma=sigma, deg=deg)
+        # 1D extract
+        thru1dfname = os.path.join(workdir, os.path.basename(thrufname)[:-5]+".1d.ms.fits")
+        # Maybe do this with profile extraction? Will only matter if there are significant
+        #  fiber-to-fiber differences in the profile.
+        quick_1d_extract(thrufname_scat, thrufname, fiberconfig, Nextract=Nextract,
+                         outfname=thru1dfname)
+        #quick_1d_extract(thrufname, thrufname, fiberconfig, Nextract=Nextract,
+        #                 outfname=thru1dfname)
+        # Load spectrum and calculate throughput medians
+        with fits.open(thru1dfname) as hdul:
+            data = hdul[0].data
+        thrumat = np.zeros((Nobj,Norder)) + np.nan
+        for iobj in range(Nobj):
+            for iord in range(Norder):
+                itrace = iord + iobj*Norder
+                xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1)
+                thrumat[iobj,iord] = np.median(data[itrace,xarr])
+        allthrumat[irow] = thrumat
+        print("--THRU: Took {:.1f}".format(time.time()-start2))
+    print("--ALLTHRU: Took {:.1f}".format(time.time()-start))
+    np.save(throughput_fname, allthrumat)
+    ## One overall normalization for all fibers/orders
+    #overall_norm = np.median(allthrumat.reshape((Nthru, Nobj*Norder)), axis=1)
+    #norm_allthrumat = allthrumat / overall_norm[:,np.newaxis,np.newaxis]
+    ## One overall normalization for each order
+    overall_norm = np.median(allthrumat, axis=1)
+    norm_allthrumat = allthrumat / overall_norm[:,np.newaxis,:]
+    final_thrumat = np.median(norm_allthrumat, axis=0)
+    #final_thrumat = np.zeros((Nobj,Norder))
+    #norm = np.zeros((Nthru, Norder))
+    #for irow in range(Nthru):
+    #    for iord in range(Norder):
+    #        norm[irow,iord] = np.median(allthrumat[irow,:,iord])
+    #norm_allthrumat = allthrumat / norm[:, np.newaxis, :]
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            #final_thrumat[iobj,iord] = np.median(norm_allthrumat[:,iobj,iord])
+            print("obj={:2} ord={} thru = {:.2f} +/- {:.3f}".format(
+                    iobj,iord,final_thrumat[iobj,iord],
+                    np.std(norm_allthrumat[:,iobj,iord])))
+    
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(Nthru,Norder,figsize=(5*Norder,5*Nthru))
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    for irow,row in enumerate(tab):
+        thrufname = get_file(row["FILE"], workdir, "d")
+        thru1dfname = os.path.join(workdir, os.path.basename(thrufname)[:-5]+".1d.ms.fits")
+        with fits.open(thru1dfname) as hdul:
+            data = hdul[0].data
+        for iobj in range(Nobj):
+            for iord in range(Norder):
+                itrace = iord + iobj*Norder
+                xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1)
+                #axes[iord].plot(xarr, data[itrace,xarr]/norm_allthrumat[irow,iobj,iord], lw=.5)
+                #axes[irow,iord].plot(xarr, data[itrace,xarr]/allthrumat[irow,iobj,iord], lw=.5)
+                #axes[iord].plot(xarr, data[itrace,xarr], lw=.5)
+                #axes[irow,iord].plot(xarr, data[itrace,xarr]/final_thrumat[iobj,2], lw=.5)
+                #axes[irow,iord].plot(xarr, data[itrace,xarr]/final_thrumat[iobj,iord], lw=.5)
+                axes[irow,iord].plot(xarr, data[itrace,xarr]/final_thrumat[iobj,4], lw=.5)
+                axes[irow,iord].set_xlim(xarr[0], xarr[-1])
+    fig.tight_layout()
+    fig.savefig("thrutest.png")
+    plt.show()
+    
+    fig, axes = plt.subplots(1,Norder,figsize=(6*Norder,6))
+    objnumarr = np.arange(Nobj)
+    for iord in range(Norder):
+        ax = axes[iord]
+        ax.axhline(1.0,color='k',linestyle=':')
+        for i in range(Nthru):
+            ax.plot(objnumarr, norm_allthrumat[i,:,iord], label=str(i))
+        ax.set_xlabel("iobj")
+        ax.set_title("Order {}".format(trueord[iord]))
+    ylim = [np.inf, -np.inf]
+    for ax in axes:
+        ylim[0] = min(ylim[0], ax.get_ylim()[0])
+        ylim[1] = max(ylim[1], ax.get_ylim()[1])
+    for ax in axes:
+        ax.set_ylim(ylim)
+    fig.tight_layout()
+    
+    fig, axes = plt.subplots(1,Norder,figsize=(6*Norder,6))
+    objnumarr = np.arange(Nobj)
+    for iord in range(Norder):
+        ax = axes[iord]
+        ax.axhline(1.0,color='k',linestyle=':')
+        for i in range(Nthru):
+            ax.plot(objnumarr, norm_allthrumat[i,:,iord], label=str(i))
+        ax.set_xlabel("iobj")
+        ax.set_title("Order {}".format(trueord[iord]))
+    ylim = [np.inf, -np.inf]
+    for ax in axes:
+        ylim[0] = min(ylim[0], ax.get_ylim()[0])
+        ylim[1] = max(ylim[1], ax.get_ylim()[1])
+    for ax in axes:
+        ax.set_ylim(ylim)
+    fig.tight_layout()
+    
+    fig, ax = plt.subplots(figsize=(6,6))
+    ax.axhline(1.0,color='k',linestyle=':')
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    for i in range(Nthru):
+        for iord in range(Norder):
+            ax.plot(objnumarr, norm_allthrumat[i,:,iord], color=colors[iord % len(colors)],)
+        ax.set_xlabel("iobj")
+    fig.tight_layout()
+    
+    plt.show()
+
+def tmp():    
     ### Trace flat
     m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig)
     
