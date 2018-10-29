@@ -612,6 +612,8 @@ def m2fs_trace_orders(fname, fiberconfig,
                       midx=None,
                       nthresh=2.0, ystart=0, dx=20, dy=5, nstep=10, degree=5, ythresh=500,
                       trace_degree=None, stdev_degree=None,
+                      fiber_count_check=True,
+                      bad_indexes=[],
                       make_plot=True):
     """
     Order tracing by fitting. Adapted from Terese Hansen
@@ -651,15 +653,28 @@ def m2fs_trace_orders(fname, fiberconfig,
         coef = gaussfit(auxx, auxy, [auxdata[peak1[i]], peak1[i], 2, thresh/2.], maxfev=99999)
         peak[i] = coef[1]
     if npeak != expected_fibers:
-        print("Npeak {} != Expected peaks {}, making plot to show peaks".format(npeak,expected_fibers))
-        plt.plot(auxdata,color="k")
-        for i in range(npeak):
-            plt.axvline(peak[i], linestyle=':', linewidth=1, color='r')
-        plt.axhline(thresh)
-        plt.ylim(0, np.nanmax(auxdata)+10)
-        plt.show()
-        raise ValueError
-    assert npeak==expected_fibers, (npeak, expected_fibers)
+        if fiber_count_check:
+            print("Npeak {} != Expected peaks {}, making plot to show peaks".format(npeak,expected_fibers))
+            plt.plot(auxdata,color="k")
+            for i in range(npeak):
+                plt.axvline(peak[i], linestyle=':', linewidth=1, color='r')
+            plt.axhline(thresh)
+            plt.ylim(0, np.nanmax(auxdata)+10)
+            plt.show()
+            raise ValueError
+        else:
+            print("WARNING: npeak = {}, expected_fibers = {} [pressing on anyway with bad_indexes]".format(npeak, expected_fibers))
+            assert len(bad_indexes) + npeak == expected_fibers, bad_indexes
+            _peak = peak.copy()
+            peak = np.zeros(expected_fibers)
+            igood = 0
+            for i in range(expected_fibers):
+                if i in bad_indexes: peak[i] = peak[0]
+                else:
+                    peak[i] = _peak[igood]
+                    igood += 1
+            npeak = expected_fibers
+            
     # TODO allow some interfacing of the parameters and plotting
     
     ## FIRST TRACE: do in windows
@@ -747,13 +762,19 @@ def m2fs_trace_orders(fname, fiberconfig,
     coeff2 = np.zeros((stdev_degree+1,npeak))
     for i in range(npeak):
         sel = np.isfinite(ypeak[:,i]) #np.where(ypeak[:,i] != -666)[0]
-        xarr_fit = np.arange(nx)[sel]
-        #auxcoeff = np.polyfit(xarr_fit, ypeak[sel,i], trace_degree)
-        _, auxcoeff = jds_poly_reject(xarr_fit, ypeak[sel,i], trace_degree, 5, 5)
-        coeff[:,i] = auxcoeff
-        #auxcoeff2 = np.polyfit(xarr_fit, ystdv[sel,i], stdev_degree)
-        _, auxcoeff2 = jds_poly_reject(xarr_fit, ystdv[sel,i], stdev_degree, 5, 5)
-        coeff2[:,i] = auxcoeff2
+        if np.sum(sel) < trace_degree or np.sum(sel) < stdev_degree:
+            print("WARNING: peak {} only has {} points".format(i,np.sum(sel)))
+        try:
+            xarr_fit = np.arange(nx)[sel]
+            #auxcoeff = np.polyfit(xarr_fit, ypeak[sel,i], trace_degree)
+            _, auxcoeff = jds_poly_reject(xarr_fit, ypeak[sel,i], trace_degree, 5, 5)
+            coeff[:,i] = auxcoeff
+            #auxcoeff2 = np.polyfit(xarr_fit, ystdv[sel,i], stdev_degree)
+            _, auxcoeff2 = jds_poly_reject(xarr_fit, ystdv[sel,i], stdev_degree, 5, 5)
+            coeff2[:,i] = auxcoeff2
+        except:
+            print("Failed on {}".format(i))
+            raise
 
     fname1, fname2 = m2fs_get_trace_fnames(fname)
     print(fname,fname1,fname2)
@@ -1940,6 +1961,7 @@ def quick_1d_extract(objfname, flatfname, fiberconfig, outfname=None, Nextract=4
     """
     Trace the flat and aperture sum extract flux vs pixel, saving as multispec.
     Use e.g. for getting an initial arc identification, or sanity/improvement checks.
+    Also used for throughput extractions.
     """
     if outfname is None:
         outfname = os.path.join(os.path.dirname(objfname),os.path.basename(objfname)[:-5]+".1d.ms.fits")
