@@ -1990,3 +1990,98 @@ def quick_1d_extract(objfname, flatfname, fiberconfig, outfname=None, Nextract=4
             data_to_sum =  R[X_to_get, Y_to_get]
             onedarcs[itrace,Xarr] = np.sum(data_to_sum, axis=1)
     make_multispec(outfname, [onedarcs.T], ["sum extract spectrum"])
+
+def m2fs_process_throughput_frames(thrunames, thruscatnames, outfname,
+                                   fiberconfig,
+                                   Nextract=4,
+                                   redo_scattered_light=False, 
+                                   scattrace_ythresh=200, scattrace_nthresh=1.9, scat_Npixcut=13, scat_sigma=3.0, scat_deg=[5,5],
+                                   make_plot=True):
+    """
+    Given a set of frames to use for throughput (e.g. twilight frames):
+    * trace orders
+    * subtract scattered light
+    * extract spectra
+    * calculate throughput
+    
+    Output an array of Nobj, Norder which is the throughput in that order medianed across all the input throughput frames.
+    """
+    assert len(thrunames) == len(thruscatnames), (thrunames, thruscatnames)
+    Nthru = len(thrunames)
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    
+    outdir = os.path.dirname(outfname)
+    outname = os.path.basename(outfname)
+    
+    allthrumat = np.zeros((Nthru, Nobj, Norder))
+    start = time.time()
+    for iframe, (thruname, thruscatname) in enumerate(zip(thrunames, thruscatnames)):
+        workdir = os.path.dirname(thruscatname)
+        ## Trace and scattered light subtraction
+        if not os.path.exists(thruscatname) or redo_scattered_light:
+            start2 = time.time()
+            print("m2fs_process_throughput_frames: trace and scattered light {} -> {}".format(thruname, thruscatname))
+            m2fs_trace_orders(thruname, fiberconfig, make_plot=make_plot, ythresh=scattrace_ythresh, nthresh=scattrace_nthresh)
+            m2fs_subtract_scattered_light(thruname, thruname, None, fiberconfig,
+                                          make_plot=make_plot, Npixcut=scat_Npixcut, sigma=scat_sigma, deg=scat_deg)
+            print("m2fs_process_throughput_frames: Took {:.1f}s".format(time.time()-start2))
+        elif os.path.exists(thruscatname):
+            print("m2fs_process_throughput_frames: {} already exists".format(thruscatname))
+        
+        ## Extract
+        start2 = time.time()
+        thru1dfname = os.path.join(workdir, os.path.basename(thruname)[:-5]+".1d.ms.fits")
+        quick_1d_extract(thruscatname, thruname, fiberconfig, Nextract=Nextract,
+                         outfname=thru1dfname)
+        print("m2fs_process_throughput_frames extraction: Took {:.1f}s -> {}".format(time.time()-start2, thru1dfname))
+        
+        ## Compute throughput
+        thrumat = m2fs_find_throughput_oneframe(thru1dfname, fiberconfig)
+        allthrumat[iframe] = thrumat
+    overall_norm = np.median(allthrumat, axis=1)
+    norm_allthrumat = allthrumat / overall_norm[:,np.newaxis,:]
+    final_thrumat = np.median(norm_allthrumat, axis=0)
+    np.save(outfname, [final_thrumat, norm_allthrumat])
+    print("m2fs_process_throughput_frames: processing {} frames took {:.1f}s".format(
+            Nthru, time.time()-start))
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            #final_thrumat[iobj,iord] = np.median(norm_allthrumat[:,iobj,iord])
+            print("obj={:2} ord={} thru = {:.2f} +/- {:.3f}".format(
+                    iobj,iord,final_thrumat[iobj,iord],
+                    np.std(norm_allthrumat[:,iobj,iord])))
+    if make_plot:
+        trueord = fiberconfig[2]
+        objnumarr = np.arange(Nobj)
+        fig, ax = plt.subplots(figsize=(8,8))
+        ax.axhline(1.0, color='k', linestyle=':')
+        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        for iord in range(Norder):
+            for i in range(Nthru):
+                ax.plot(objnumarr, norm_allthrumat[i,:,iord], color=colors[iord % len(colors)], lw=.5)
+            ax.plot(objnumarr, final_thrumat[:, iord], color=colors[iord % len(colors)], alpha=.3, lw=5,
+                    label=str(trueord[iord]))
+        ax.set_xlabel("iobj")
+        ax.legend(loc="best", ncol=2)
+        fig.tight_layout()
+        fig.savefig("{}/{}_thru_all.png".format(outdir, outname))
+        plt.close(fig)
+
+def m2fs_find_throughput_oneframe(thru1dfname, fiberconfig,
+                                  verbose=True):
+    """
+    Given a single 1D multispec file, calculate the throughput.
+    """
+    start2 = time.time()
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    with fits.open(thru1dfname) as hdul:
+        data = hdul[0].data
+    thrumat = np.zeros((Nobj,Norder)) + np.nan
+    for iobj in range(Nobj):
+        for iord in range(Norder):
+            itrace = iord + iobj*Norder
+            xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1)
+            thrumat[iobj,iord] = np.median(data[itrace,xarr])
+    if verbose:
+        print("--m2fs_find_throughput_oneframe: {} Took {:.1f}".format(thru1dfname, time.time()-start2))
+    return thrumat

@@ -16,7 +16,7 @@ from m2fs_utils import m2fs_get_pixel_functions, m2fs_load_trace_function
 from m2fs_utils import m2fs_subtract_scattered_light
 from m2fs_utils import m2fs_ghlb_extract, m2fs_sum_extract, m2fs_horne_flat_extract
 from m2fs_utils import m2fs_horne_ghlb_extract, m2fs_spline_ghlb_extract
-from m2fs_utils import quick_1d_extract
+from m2fs_utils import m2fs_process_throughput_frames #quick_1d_extract
 
 #################################################
 # Tools to see if you have already done a step
@@ -315,16 +315,16 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
 #################################################
 if __name__=="__main__":
     start = time.time()
-    #dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
-    #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
-    #calibconfigname = "nov2017run.txt"
-    #fiberconfigname = "data/Mg_wide_r.txt"
-    #throughput_fname = "./Mg_wide_r_throughput.npy"
-    dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-    workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
+    dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
+    workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
     calibconfigname = "nov2017run.txt"
-    fiberconfigname = "data/Bulge_GC1_b.txt"
-    throughput_fname = "./Bulge_GC1_b_throughput.npy"
+    fiberconfigname = "data/Mg_wide_r.txt"
+    throughput_fname = os.path.join(workdir,"Mg_wide_r_throughput.npy")
+    #dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
+    #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
+    #calibconfigname = "nov2017run.txt"
+    #fiberconfigname = "data/Bulge_GC1_b.txt"
+    #throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(calibconfigname)
@@ -350,15 +350,23 @@ if __name__=="__main__":
 
     ### Throughput correction with twilight flats
     #m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname)
+    tab = load_db(dbname)
+    tab = tab[tab["EXPTYPE"]=="Thru"]
+    Nthru = len(tab)
+    thrufnames = [get_file(row["FILE"], workdir, "d") for row in tab]
+    thrufnames_scat = [get_file(row["FILE"], workdir, "ds") for row in tab]
+    m2fs_process_throughput_frames(thrufnames, thrufnames_scat, throughput_fname, fiberconfig,
+                                   redo_scattered_light=True)
+
+
+
+def tmp():
     Npixcut=13; sigma=3.0; deg=[5,5]
     Nextract=4
     ythresh=200; nthresh=1.9
     from astropy.io import ascii, fits
     from m2fs_utils import m2fs_get_trace_fnames
     
-    tab = load_db(dbname)
-    tab = tab[tab["EXPTYPE"]=="Thru"]
-    Nthru = len(tab)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
     ordpixranges = fiberconfig[4]
     trueord = fiberconfig[2]
