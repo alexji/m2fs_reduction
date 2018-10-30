@@ -1301,10 +1301,17 @@ def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
     
 def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixcut,
                                   badcols=[], deg=[5,5], sigma=3.0, maxiter=10,
+                                  manual_tracefn=None,
                                   verbose=True, make_plot=True):
     """
     The basic idea is to mask out the defined extraction regions in the 2D image,
     then fit a 2D legendre polynomial to the rest of the pixels.
+    
+    You can specify a manual trace function by setting flatfname = None,
+    and setting manual_tracefn to a function.
+    manual_tracefn(iobj, iord, X) -> Yarr
+    
+    note: arcfname is not used.
     """
     start = time.time()
     outdir = os.path.dirname(fname)
@@ -1323,7 +1330,11 @@ def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixc
     dy = np.arange(-Npixcut, Npixcut+1)
     Npix = R.shape[0]
     offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
-    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    if flatfname is not None:
+        tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    else:
+        assert manual_tracefn is not None, "Must specify manual_tracefn"
+        tracefn = manual_tracefn
     
     # Find all pixels used in extraction
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
