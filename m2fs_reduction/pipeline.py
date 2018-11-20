@@ -315,16 +315,18 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
 #################################################
 if __name__=="__main__":
     start = time.time()
-    dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
-    workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
-    calibconfigname = "nov2017run.txt"
-    fiberconfigname = "data/Mg_wide_r.txt"
-    throughput_fname = os.path.join(workdir,"Mg_wide_r_throughput.npy")
-    #dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-    #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
-    #calibconfigname = "nov2017run.txt"
-    #fiberconfigname = "data/Bulge_GC1_b.txt"
-    #throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
+    if False:
+        dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
+        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
+        calibconfigname = "nov2017run.txt"
+        fiberconfigname = "data/Mg_wide_r.txt"
+        throughput_fname = os.path.join(workdir,"Mg_wide_r_throughput.npy")
+    else:
+        dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
+        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
+        calibconfigname = "nov2017run.txt"
+        fiberconfigname = "data/Bulge_GC1_b.txt"
+        throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(calibconfigname)
@@ -355,9 +357,12 @@ if __name__=="__main__":
     Nthru = len(tab)
     thrufnames = [get_file(row["FILE"], workdir, "d") for row in tab]
     thrufnames_scat = [get_file(row["FILE"], workdir, "ds") for row in tab]
+    # Calculate throughput corrections
     m2fs_process_throughput_frames(thrufnames, thrufnames_scat, throughput_fname, fiberconfig,
-                                   redo_scattered_light=True)
-
+                                   redo_scattered_light=False)
+    # Apply throughput corrections to data
+    from m2fs_utils import m2fs_load_fiber_throughput
+    thru = m2fs_load_fiber_throughput(throughput_fname, fiberconfig)
 
 
 def tmp():

@@ -2022,7 +2022,7 @@ def m2fs_process_throughput_frames(thrunames, thruscatnames, outfname,
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
     
     outdir = os.path.dirname(outfname)
-    outname = os.path.basename(outfname)
+    outname = os.path.basename(outfname)[:-4]
     
     allthrumat = np.zeros((Nthru, Nobj, Norder))
     start = time.time()
@@ -2072,6 +2072,8 @@ def m2fs_process_throughput_frames(thrunames, thruscatnames, outfname,
                 ax.plot(objnumarr, norm_allthrumat[i,:,iord], color=colors[iord % len(colors)], lw=.5)
             ax.plot(objnumarr, final_thrumat[:, iord], color=colors[iord % len(colors)], alpha=.3, lw=5,
                     label=str(trueord[iord]))
+        fiber_thru = m2fs_load_fiber_throughput(outfname, fiberconfig)
+        ax.plot(objnumarr, fiber_thru, 'ko-', color='k', alpha=.3, lw=9)
         ax.set_xlabel("iobj")
         ax.legend(loc="best", ncol=2)
         fig.tight_layout()
@@ -2096,3 +2098,19 @@ def m2fs_find_throughput_oneframe(thru1dfname, fiberconfig,
     if verbose:
         print("--m2fs_find_throughput_oneframe: {} Took {:.1f}".format(thru1dfname, time.time()-start2))
     return thrumat
+
+def m2fs_load_fiber_throughput(thrufname, fiberconfig):
+    """ Calculate the median of the inner orders to determine fiber throughput """
+    # Nobj * Norder
+    thrumat, _ = np.load(thrufname)
+    throughput_orders = pick_throughput_orders(fiberconfig)
+    thrumat = thrumat[:,throughput_orders]
+    fiber_thru = np.median(thrumat, axis=1)
+    assert fiber_thru.shape == (fiberconfig[0],)
+    return fiber_thru
+def pick_throughput_orders(fiberconfig):
+    """ For now just reject the 0th and Nord-1th order numbers """
+    Nord = fiberconfig[1]
+    if Nord == 1: return np.array([0])
+    if Nord == 2: raise NotImplementedError("Need to decide what to do for 2 orders")
+    return np.arange(Nord)[1:-1]
