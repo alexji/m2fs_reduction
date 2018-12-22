@@ -1629,7 +1629,7 @@ def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma
     print("Total time: {:.1f}".format(time.time()-start))
     
 def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
-                     Npix=2048, make_plot=True):
+                     Npix=2048, make_plot=True, throughput_fname=None):
     """
     Nextract: total 2xNextract+1 pixels will be added together
     """
@@ -1644,6 +1644,7 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    fiber_thru = m2fs_load_fiber_throughput(throughput_fname, fiberconfig)
     
     dy = np.arange(-Nextract, Nextract+1)
     offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
@@ -1663,8 +1664,8 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
             assert np.all(X_to_get.shape == Y_to_get.shape)
             data_to_sum =  R[X_to_get, Y_to_get]
             vars_to_sum = eR[X_to_get, Y_to_get]**2.
-            outspec[iobj, iord, Xarr, 1] = np.sum(data_to_sum, axis=1)
-            outspec[iobj, iord, Xarr, 2] = np.sqrt(np.sum(vars_to_sum, axis=1))
+            outspec[iobj, iord, Xarr, 1] = np.sum(data_to_sum, axis=1)/fiber_thru[iobj]
+            outspec[iobj, iord, Xarr, 2] = np.sqrt(np.sum(vars_to_sum, axis=1))/fiber_thru[iobj]
             
             used[X_to_get, Y_to_get] += 1
     
@@ -1694,8 +1695,8 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
         fig.savefig("{}/{}_sum_usedpix.png".format(outdir,name))
         
 def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
-                       maxiter=5, sigma=5,
-                       Npix=2048, make_plot=True):
+                            maxiter=5, sigma=5,
+                            Npix=2048, make_plot=True, throughput_fname=None):
     """
     Nextract: total 2xNextract+1 pixels will be added together
     """
@@ -1712,6 +1713,7 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    fiber_thru = m2fs_load_fiber_throughput(throughput_fname, fiberconfig)
     
     dy = np.arange(-Nextract, Nextract+1)
     offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
@@ -1755,8 +1757,8 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
                 if lastNmask == Nmask: break
                 lastNmask = Nmask
             varest = np.sum(mask * flat_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
-            outspec[iobj, iord, Xarr, 1] = specest
-            outspec[iobj, iord, Xarr, 2] = varest
+            outspec[iobj, iord, Xarr, 1] = specest/fiber_thru[iobj]
+            outspec[iobj, iord, Xarr, 2] = np.sqrt(varest)/fiber_thru[iobj]
             model[X_to_get, Y_to_get] += flat_to_sum * specest[:,np.newaxis]
     header["NEXTRACT"] = Nextract
     header.add_history("m2fs_horne_extract: horne extraction with window 2*{}+1".format(Nextract))
@@ -1777,7 +1779,7 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
 
 def m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract,
                             maxiter=5, sigma=5,
-                            Npix=2048, make_plot=True):
+                            Npix=2048, make_plot=True, throughput_fname=None):
     """
     Does a Horne extraction using the GHLB spatial profile fit from the flat.
     Squashes all X-pixels to a single wavelength.
@@ -1796,6 +1798,7 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconf
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    fiber_thru = m2fs_load_fiber_throughput(throughput_fname, fiberconfig)
     
     ghlb_data_path = os.path.join(os.path.dirname(flatfname2), os.path.basename(flatfname2)[:-5]+"_GHLB.npy")
     ghlb_data = np.load(ghlb_data_path)
@@ -1847,8 +1850,8 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconf
                 if lastNmask == Nmask: break
                 lastNmask = Nmask
             varest = np.sum(mask * flat_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
-            outspec[iobj, iord, Xarr, 1] = specest
-            outspec[iobj, iord, Xarr, 2] = varest
+            outspec[iobj, iord, Xarr, 1] = specest/fiber_thru[iobj]
+            outspec[iobj, iord, Xarr, 2] = np.sqrt(varest)/fiber_thru[iobj]
             model[X_to_get, Y_to_get] += flat_to_sum * specest[:,np.newaxis]
     
     header["NEXTRACT"] = Nextract
@@ -1871,7 +1874,7 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconf
 
 def m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract,
                              maxiter=5, sigma=5,
-                             Npix=2048, make_plot=True):
+                             Npix=2048, make_plot=True, throughput_fname=None):
     """
     Does a spline fit extraction using the GHLB spatial profile fit from the flat.
     Still need to specify a window Nextract within which to use the extraction.
@@ -1888,6 +1891,7 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fibercon
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    fiber_thru = m2fs_load_fiber_throughput(throughput_fname, fiberconfig)
     
     ghlb_data_path = os.path.join(os.path.dirname(flatfname2), os.path.basename(flatfname2)[:-5]+"_GHLB.npy")
     ghlb_data = np.load(ghlb_data_path)
@@ -1945,8 +1949,8 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fibercon
                 if lastNmask == Nmask: break
                 lastNmask = Nmask
             varest = np.sum(mask * flat_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
-            outspec[iobj, iord, Xarr, 1] = specest
-            outspec[iobj, iord, Xarr, 2] = varest
+            outspec[iobj, iord, Xarr, 1] = specest/fiber_thru[iobj]
+            outspec[iobj, iord, Xarr, 2] = np.sqrt(varest)/fiber_thru[iobj]
             model[X_to_get, Y_to_get] += flat_to_sum * specest[:,np.newaxis]
     
     header["NEXTRACT"] = Nextract
@@ -2101,6 +2105,7 @@ def m2fs_find_throughput_oneframe(thru1dfname, fiberconfig,
 
 def m2fs_load_fiber_throughput(thrufname, fiberconfig):
     """ Calculate the median of the inner orders to determine fiber throughput """
+    if thrufname is None: return np.ones(fiberconfig[0])
     # Nobj * Norder
     thrumat, _ = np.load(thrufname)
     throughput_orders = pick_throughput_orders(fiberconfig)

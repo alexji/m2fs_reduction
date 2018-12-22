@@ -237,7 +237,8 @@ def m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig, calibconfig):
     print("Fitting GHLB to flats took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "flat-ghlb")
 
-def m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract):
+def m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract,
+                              throughput_fname=None):
     """
     Simple sum extraction within an aperture of 2*Nextract+1 pixels around the trace
     """
@@ -248,11 +249,13 @@ def m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextrac
     flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
-        m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract, make_plot=True)
+        m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract, make_plot=True,
+                         throughput_fname=throughput_fname)
     
     mark_finished(workdir, "extract-sum")
 
-def m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract):
+def m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract,
+                            throughput_fname=None):
     """
     Horne extraction using flat as object profile for 2*Nextract+1 pixels around the trace
     """
@@ -263,7 +266,8 @@ def m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract)
     flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
-        m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract, make_plot=True)
+        m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract, make_plot=True,
+                                throughput_fname=throughput_fname)
     
     mark_finished(workdir, "extract-horneflat")
 
@@ -284,7 +288,8 @@ def m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig):
     print("Fitting GHLB to flats took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "extract-horneflat")
 
-def m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract):
+def m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract,
+                            throughput_fname=None):
     if check_finished(workdir, "extract-horneghlb"): return
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
@@ -293,11 +298,13 @@ def m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract)
     arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     start = time.time()
     for objfname, flatfname, flatfname2, arcfname in zip(objfnames, flatfnames, flatfnames2, arcfnames):
-        m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=Nextract)
+        m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=Nextract,
+                                throughput_fname=throughput_fname)
     print("Horne GHLB extract took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "extract-horneghlb")
 
-def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract):
+def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract,
+                             throughput_fname=None):
     if check_finished(workdir, "extract-splineghlb"): return
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
@@ -306,7 +313,8 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
     arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     start = time.time()
     for objfname, flatfname, flatfname2, arcfname in zip(objfnames, flatfnames, flatfnames2, arcfnames):
-        m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=Nextract)
+        m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=Nextract,
+                                 throughput_fname=throughput_fname)
     print("Spline GHLB extract took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "extract-splineghlb")
 
@@ -366,7 +374,6 @@ if __name__=="__main__":
     ### M2FS wavecal
     ## Find sources in 2D arc spectrum (currently a separate step running sextractor)
     m2fs_wavecal_find_sources(dbname, workdir, calibconfig)
-    
     # NOTE: IF AN ARC HAS NOT BEEN IDENTIFIED, IT NEEDS TO BE DONE MANUALLY NOW
     ## Identify features in 2D spectrum with coherent point drift
     m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig)
@@ -375,16 +382,17 @@ if __name__=="__main__":
     
     ### Scattered light subtraction
     m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)
+    
     ### Simple sum extraction
-    m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4)
+    m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile
-    m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4)
+    m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### GHLB fit flats as profiles
     m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig)
     ### Horne extraction with GHLB fit as profile
-    m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5)
+    m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
     ### Spline extraction with GHLB fit as profile
-    m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5)
+    m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
     
     print("Total time for {} objects: {:.1f}s".format(len(objnums), time.time()-start))
 
