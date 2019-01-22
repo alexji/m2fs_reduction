@@ -323,18 +323,18 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
 #################################################
 if __name__=="__main__":
     start = time.time()
-    if False:
-        dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
-        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
-        calibconfigname = "nov2017run.txt"
-        fiberconfigname = "data/Mg_wide_r.txt"
-        throughput_fname = os.path.join(workdir,"Mg_wide_r_throughput.npy")
+    if True:
+        dbname = "/Volumes/My Passport for Mac/M2FS_Hyi1/raw_data/redM2FS.db"
+        workdir = "/Volumes/My Passport for Mac/M2FS_Hyi1/reduced_data/red"
+        calibconfigname = "/Volumes/My Passport for Mac/M2FS_Hyi1/hyi1.txt"
+        fiberconfigname = "data/5targ_r.txt"
+        throughput_fname = os.path.join(workdir,"5targ_r_throughput.npy")
     else:
-        dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
-        calibconfigname = "nov2017run.txt"
-        fiberconfigname = "data/Bulge_GC1_b.txt"
-        throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
+        dbname = "/Volumes/My Passport for Mac/M2FS_Hyi1/raw_data/blueM2FS.db"
+        workdir = "/Volumes/My Passport for Mac/M2FS_Hyi1/reduced_data/blue"
+        calibconfigname = "/Volumes/My Passport for Mac/M2FS_Hyi1/hyi1.txt"
+        fiberconfigname = "data/5targ_b.txt"
+        throughput_fname = os.path.join(workdir,"5targ_b_throughput.npy")
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(calibconfigname)
@@ -350,14 +350,15 @@ if __name__=="__main__":
     flatnames= [get_file(x, workdir, "d") for x in flattab["FILE"]]
     objnames = [get_file(x, workdir, "d") for x in objtab["FILE"]]
     
-    calibconfig = ascii.read(calibconfigname)
-    fiberconfig = m2fs_parse_fiberconfig(fiberconfigname)
-    objnums = get_obj_nums(calibconfig)
-    
     ### Prep data
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
 
+def tmp():
+    calibconfig = ascii.read(calibconfigname)
+    fiberconfig = m2fs_parse_fiberconfig(fiberconfigname)
+    objnums = get_obj_nums(calibconfig)
+    
     ### Throughput correction with twilight flats
     #m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname)
     tab = load_db(dbname)
@@ -374,6 +375,8 @@ if __name__=="__main__":
     ### M2FS wavecal
     ## Find sources in 2D arc spectrum (currently a separate step running sextractor)
     m2fs_wavecal_find_sources(dbname, workdir, calibconfig)
+
+def tmp():
     # NOTE: IF AN ARC HAS NOT BEEN IDENTIFIED, IT NEEDS TO BE DONE MANUALLY NOW
     ## Identify features in 2D spectrum with coherent point drift
     m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig)
