@@ -60,7 +60,7 @@ def get_arc_num(objnum, calibconfig):
 def get_obj_file(objnum, dbname, workdir, calibconfig, suffix="d"):
     tab = load_db(dbname, calibconfig)
     ix = np.where(tab["NUM"]==objnum)[0][0]
-    assert tab[ix]["EXPTYPE"]=="Object"
+    #assert tab[ix]["EXPTYPE"]=="Object"
     return get_file(tab[ix]["FILE"], workdir, suffix)
 def get_flat_file(objnum, dbname, workdir, calibconfig, suffix="d"):
     flatnum = get_flat_num(objnum, calibconfig)
@@ -330,9 +330,14 @@ if __name__=="__main__":
         fiberconfigname = "data/Mg_wide_r.txt"
         throughput_fname = os.path.join(workdir,"Mg_wide_r_throughput.npy")
     else:
+        #dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
+        #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
+        #calibconfigname = "nov2017run.txt"
+        #fiberconfigname = "data/Bulge_GC1_b.txt"
+        #throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
         dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
-        calibconfigname = "nov2017run.txt"
+        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b_arcs"
+        calibconfigname = "nov2017arcs.txt"
         fiberconfigname = "data/Bulge_GC1_b.txt"
         throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
     assert os.path.exists(dbname)
