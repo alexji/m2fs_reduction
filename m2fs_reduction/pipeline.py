@@ -126,9 +126,25 @@ def m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig):
     fnames = [get_flat_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
     for fname in np.unique(fnames):
         m2fs_trace_orders(fname, fiberconfig, make_plot=True)
+        for detection_scale_factor in [7.0, 6.0, 5.0, 4.0, 3.0]:
+            try:
+                m2fs_new_trace_orders(fname, fiberconfig, make_plot=True,
+                                      detection_scale_factor=detection_scale_factor)
+            except:
+                pass
+            else:
+                break
     mark_finished(workdir, "traceflat")
 def m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname):
-    pass
+    if check_finished(workdir, "throughput"): return
+    tab = load_db(dbname)
+    tab = tab[tab["EXPTYPE"]=="Thru"]
+    Nthru = len(tab)
+    thrufnames = [get_file(row["FILE"], workdir, "d") for row in tab]
+    thrufnames_scat = [get_file(row["FILE"], workdir, "ds") for row in tab]
+    # Calculate throughput corrections
+    m2fs_process_throughput_frames(thrufnames, thrufnames_scat, throughput_fname, fiberconfig)
+    mark_finished(workdir, "throughput")
 
 def m2fs_wavecal_find_sources(dbname, workdir, calibconfig):
     if check_finished(workdir, "wavecal-findsources"): return
@@ -282,11 +298,14 @@ def m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig):
     done = []
     for flatfname, flatfname2, arcfname in zip(flatfnames, flatfnames2, arcfnames):
         if flatfname in done: continue
-        m2fs_ghlb_extract(flatfname2, flatfname, arcfname, fiberconfig, yscut=2.5, deg=[0,10], sigma=5.0,
-                          make_plot=True, make_obj_plots=True)
+        try:
+            m2fs_ghlb_extract(flatfname2, flatfname, arcfname, fiberconfig, yscut=2.5, deg=[0,10], sigma=5.0,
+                              make_plot=True, make_obj_plots=True)
+        except:
+            import pdb; pdb.set_trace()
         done.append(flatfname)
     print("Fitting GHLB to flats took {:.1f}".format(time.time()-start))
-    mark_finished(workdir, "extract-horneflat")
+    mark_finished(workdir, "extract-fitflat")
 
 def m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract,
                             throughput_fname=None):
@@ -347,7 +366,6 @@ if __name__=="__main__":
     
     tab = load_db(dbname)
     ## I am assuming everything is part of the same setting
-    #tab = ascii.read(dbname)
     arctab = tab[tab["EXPTYPE"]=="Comp"]
     flattab= tab[tab["EXPTYPE"]=="Flat"]
     objtab = tab[tab["EXPTYPE"]=="Object"]
@@ -364,15 +382,7 @@ if __name__=="__main__":
     m2fs_darksub(dbname, workdir)
 
     ### Throughput correction with twilight flats
-    #m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname)
-    tab = load_db(dbname)
-    tab = tab[tab["EXPTYPE"]=="Thru"]
-    Nthru = len(tab)
-    thrufnames = [get_file(row["FILE"], workdir, "d") for row in tab]
-    thrufnames_scat = [get_file(row["FILE"], workdir, "ds") for row in tab]
-    # Calculate throughput corrections
-    m2fs_process_throughput_frames(thrufnames, thrufnames_scat, throughput_fname, fiberconfig)
-    
+    m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname)
     ### Trace flat
     m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig)
     
@@ -392,6 +402,7 @@ if __name__=="__main__":
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile
     m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
+    
     ### GHLB fit flats as profiles
     m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig)
     ### Horne extraction with GHLB fit as profile

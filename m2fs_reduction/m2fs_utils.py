@@ -6,6 +6,7 @@ from astropy.io import ascii, fits
 from astropy.table import Table
 from astropy.stats import biweight_location, biweight_scale
 from scipy import optimize, ndimage, spatial, linalg, special, interpolate
+from skimage import morphology
 import re
 import glob, os, sys, time, subprocess
 
@@ -607,6 +608,157 @@ def m2fs_load_tracestd_function(flatname, fiberconfig):
         itrace = iobj*Norders + iorder
         return functions[itrace](x)
     return tracestd_func
+
+def m2fs_new_trace_orders(fname, fiberconfig,
+                          midx=None,
+                          detection_scale_factor=7.0,
+                          noise_removal_scale=-1,
+                          fiber_count_check=True,
+                          degree=5,
+                          trace_degree=None,
+                          make_plot=True):
+    """ New order tracing algorithm for flats """
+    start = time.time()
+    data, edata, header = read_fits_two(fname)
+    nx, ny = data.shape
+    if midx is None: midx = round(nx/2.)
+    Nobjs, Norders = fiberconfig[0], fiberconfig[1]
+    expected_peaks = Nobjs * Norders
+    
+    if trace_degree is None: trace_degree=degree
+    
+    # Convenience function for writing intermediate output fits files
+    def write_array(suffix, data):
+        plotname = "{}/{}_{}.fits".format(os.path.dirname(fname), os.path.basename(fname)[:-5], suffix)
+        write_fits_one(plotname, data, header)
+
+    # Find all pixels above the detection threshold
+    background = ndimage.median_filter(data, size=11)
+    #if make_plot: write_array("background", background)
+    data_diff = data - background
+    detection_threshold = detection_scale_factor * edata
+    detections = ((data_diff - background) > detection_threshold).astype(int)
+    # Hot pixel/cosmic noise removal (opening = erosion + dilation)
+    if noise_removal_scale > 0:
+        selem = morphology.square(noise_removal_scale)
+        cleaned_detections = morphology.opening(detections, selem)
+        Ndiff = detections.sum() - cleaned_detections.sum()
+        print("Removed {} pixels below scale {}".format(Ndiff, noise_removal_scale))
+        detections = cleaned_detections
+    # Segment detected pixels into traces, using midx as the initial seeds of the watershed algorithm
+    trace_peaks = np.where(np.diff(detections[midx]) == -1)[0]
+    markers = np.zeros_like(detections, dtype=bool)
+    markers[midx, trace_peaks] = True
+    markers, num_peaks = ndimage.label(markers)
+    if fiber_count_check: assert num_peaks == expected_peaks, num_peaks
+    segmentation = morphology.watershed(detections, markers, mask=detections.astype(bool))
+    #if make_plot: write_array("segmentation", segmentation)
+    
+    # Fit traces
+    trace_coeffs = np.zeros((num_peaks, trace_degree+1))
+    traces_all_x  = []
+    traces_all_y  = []
+    traces_all_ys = []
+    traces_all_iobj = []
+    traces_all_iord = []
+    traces_all_Rnorm = []
+    traces_all_Rnorm_coeffs = np.zeros((num_peaks,6))
+    for ipeak in range(num_peaks):
+        iobj, iord = ipeak//Norders, ipeak % Norders
+        indices_x, indices_y = np.where(segmentation == ipeak + 1)
+        # Fit mean trace
+        yfit, trace_coeff = jds_poly_reject(indices_x, indices_y, trace_degree, 5, 5)
+        trace_coeffs[ipeak,:] = trace_coeff
+        ys = indices_y - yfit
+        traces_all_x.append(indices_x)
+        traces_all_y.append(indices_y)
+        traces_all_ys.append(ys)
+        traces_all_iobj.append(np.zeros_like(indices_x.astype(int)) + iobj)
+        traces_all_iord.append(np.zeros_like(indices_x.astype(int)) + iord)
+        # Quick spectrum estimate for width purposes
+        R = data[indices_x,indices_y]
+        Rfit, coeff = jds_poly_reject(indices_x, R, 5, 5, 5)
+        Rnorm = R/np.polyval(coeff, indices_x)
+        traces_all_Rnorm.append(Rnorm)
+        traces_all_Rnorm_coeffs[ipeak,:] = coeff
+        # Note that X is not rectified, so we can't reliably do an X-dependent fit
+    trace_output =  [trace_coeffs, traces_all_x, traces_all_y, traces_all_ys, traces_all_iobj, traces_all_iord, traces_all_Rnorm, traces_all_Rnorm_coeffs]
+    
+    psfexp2_coeffs = np.zeros((Nobjs, 4))
+    if make_plot:
+        ## Plot the actual data to fit and the best-fit
+        Ncol = 4
+        Nrow = Nobjs // Ncol
+        if Ncol*Nrow < Nobjs: Nrow += 1
+        fig, axes = plt.subplots(Nrow,Ncol, figsize=(8*Ncol, 6*Nrow))
+    for iobj in range(Nobjs):
+        p0 = [0, 1.2, 2.3, 2.0]
+        ysfit = np.concatenate([traces_all_ys[iobj*Norders + iord] for iord in range(Norders)])
+        Rnormfit = np.concatenate([traces_all_Rnorm[iobj*Norders + iord] for iord in range(Norders)])
+        popt, pcov = iterfit_psfexp2(ysfit, Rnormfit, p0)
+        psfexp2_coeffs[iobj] = popt
+        if make_plot:
+            ysplot = np.linspace(-3, 3)
+            ax = axes.flat[iobj]
+            ax.plot(ysfit, Rnormfit, 'k,')
+            ax.plot(ysplot, psfexp2(ysplot, *popt), 'r-')
+            ax.set_xlim(-3,3)
+            ax.set_ylim(0,2)
+            ax.set_title(str(iobj))
+            ax.set_xlabel("ys = y-ycen")
+            ax.set_ylabel("Rnorm = R/<R(x)> (5th degree polyfit)")
+    trace_output.append(psfexp2_coeffs)
+    if make_plot:
+        fig.savefig("{}/{}_{}.png".format(os.path.dirname(fname), os.path.basename(fname)[:-5], "psfexp2fit"),
+                    bbox_inches="tight")
+        plt.close(fig)
+        ## Plot the best-fit psfexp2 parameters
+        fig, axes = plt.subplots(1,4,figsize=(24,6))
+        labels = ["ys_0","A","sigma","exponent"]
+        for i in range(4):
+            axes[i].plot(psfexp2_coeffs[:,i],'o-')
+            axes[i].set_xlabel(labels[i])
+        fig.tight_layout(); fig.savefig("{}/{}_{}.png".format(os.path.dirname(fname), os.path.basename(fname)[:-5],
+                                                            "psfexp2params"),
+                                        bbox_inches="tight")
+        ## Forward model and save the residuals
+        model = np.zeros_like(data)
+        for iobj in range(Nobjs):
+            for iord in range(Norders):
+                itrace = iobj*Norders + iord
+                _all_x = traces_all_x[itrace]
+                _all_y = traces_all_y[itrace]
+                mask = np.ones_like(_all_x, dtype=bool)
+                mask[np.abs(_all_x - biweight_location(_all_x)) > 5*biweight_scale(_all_x)] = False
+                mask[np.abs(_all_y - biweight_location(_all_y)) > 5*biweight_scale(_all_y)] = False
+                xmin, xmax = np.min(_all_x[mask]), np.max(_all_x[mask])
+                ymin, ymax = np.min(_all_y[mask]), np.max(_all_y[mask])
+                print("obj {} ord {}: x={}-{}, y={}-{}".format(iobj, iord, xmin, xmax, ymin, ymax))
+                XN, YN = np.meshgrid(np.arange(xmin, xmax+1), np.arange(ymin,ymax+1), indexing="ij")
+                RN = np.polyval(traces_all_Rnorm_coeffs[itrace], XN)
+                ysN = YN - np.polyval(trace_coeffs[itrace], XN)
+                profileN = psfexp2(ysN, *psfexp2_coeffs[iobj])
+                model[XN,YN] = model[XN,YN] + RN*profileN
+        write_array("fasttraceresidual", data - model)
+        write_array("fasttracemodel", model)
+    outfname = "{}/{}_{}.npy".format(os.path.dirname(fname), os.path.basename(fname)[:-5], "fasttrace")
+    np.save(outfname, [trace_coeffs, psfexp2_coeffs, traces_all_Rnorm_coeffs])
+    print("m2fs_new_trace_orders took {:.1f}s".format(time.time()-start))
+def iterfit_psfexp2(x,y,p0,maxiter=5,sigclip=5):
+    iigood = np.ones_like(x, dtype=bool)
+    Ngood = iigood.sum()
+    for i in range(maxiter):
+        _x, _y = x[iigood], y[iigood]
+        popt, pcov = optimize.curve_fit(psfexp2, _x, _y, p0)
+        yfit = psfexp2(x, *popt)
+        ystd = biweight_scale(y - yfit)
+        iigood[np.abs(yfit - y) > sigclip*ystd] = False
+        if iigood.sum() == Ngood: break
+        Ngood = iigood.sum()
+    popt, pcov = optimize.curve_fit(psfexp2, x[iigood], y[iigood], p0)
+    return popt, pcov
+def psfexp2(x, x0, A, sigma, exponent):
+    return A * np.exp(-(np.abs(x-x0)/sigma)**exponent)
 
 def m2fs_trace_orders(fname, fiberconfig,
                       midx=None,
@@ -1287,10 +1439,15 @@ def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1, knots=None):
     try:
         Sfunc = interpolate.LSQUnivariateSpline(L[iisort], RP[iisort], knots, W[iisort])
     except Exception as e:
+        print("ERROR: fit_S_with_profile: Failed to fit spline!")
         print(e)
+        bad_knots_indices = []
         for i in range(len(knots)-1):
             if np.sum(np.logical_and(L >= knots[i], L < knots[i+1])) <= 0:
-                print("Bad knots: {:.3f}-{:.3f}".format(knots[i],knots[i+1]))
+                print("Bad knot: i={}/{} {:.3f}-{:.3f}".format(i,Npix,knots[i],knots[i+1]))
+                bad_knots_indices.append(i+1)
+        print("The most common failure case is losing pixels at the edges of orders")
+        print("Eventually will cutting data and knots, then refit, but not today!")
         import pdb; pdb.set_trace()
     return Sfunc
 def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
@@ -1905,6 +2062,7 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fibercon
     model = np.zeros_like(R)
     for iobj in range(Nobj):
         for iord in range(Norder):
+            print("Running iobj={} iord={}".format(iobj,iord))
             Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
             Yarr = tracefn(iobj, iord, Xarr)
             # This is the L at which we will evaluate our final spline fit
@@ -1947,6 +2105,7 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fibercon
                 ## TODO recalculate pixel variances?
                 Nmask = np.sum(mask)
                 if lastNmask == Nmask: break
+                print("iter {} masked {}/{} points".format(iter,Nmask,mask.size))
                 lastNmask = Nmask
             varest = np.sum(mask * flat_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
             outspec[iobj, iord, Xarr, 1] = specest/fiber_thru[iobj]
