@@ -9,6 +9,7 @@ from m2fs_utils import read_fits_two, write_fits_two, m2fs_parse_fiberconfig
 from m2fs_utils import m2fs_4amp
 from m2fs_utils import m2fs_make_master_dark, m2fs_subtract_one_dark
 from m2fs_utils import m2fs_make_master_flat, m2fs_trace_orders
+from m2fs_utils import m2fs_new_trace_orders
 from m2fs_utils import m2fs_wavecal_find_sources_one_arc
 from m2fs_utils import m2fs_wavecal_identify_sources_one_arc
 from m2fs_utils import m2fs_wavecal_fit_solution_one_arc
@@ -126,14 +127,6 @@ def m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig):
     fnames = [get_flat_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
     for fname in np.unique(fnames):
         m2fs_trace_orders(fname, fiberconfig, make_plot=True)
-        for detection_scale_factor in [7.0, 6.0, 5.0, 4.0, 3.0]:
-            try:
-                m2fs_new_trace_orders(fname, fiberconfig, make_plot=True,
-                                      detection_scale_factor=detection_scale_factor)
-            except:
-                pass
-            else:
-                break
     mark_finished(workdir, "traceflat")
 def m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname):
     if check_finished(workdir, "throughput"): return
@@ -226,18 +219,6 @@ def m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig, Npixcut=13, 
 
 def m2fs_fit_profile_ghlb(dbname, workdir, fiberconfig, calibconfig):
     if check_finished(workdir, "flat-ghlb"): return
-    
-    ##tab = load_db(dbname)
-    ##flattab = tab[tab["EXPTYPE"]=="Flat"]
-    ##print("Found {} flats".format(len(flattab)))
-    ##arctab = tab[tab["EXPTYPE"]=="Comp"]
-    #### HACK TODO need to do something about picking this, but for now....
-    ##arctab = arctab[arctab["EXPTIME"] < 30]
-    ##print("Found {} arcs".format(len(flattab)))
-    ##
-    ###masterflatname = os.path.join(workdir, "master_flat.fits")
-    ##flatfnames = [get_file(x, workdir, "d") for x in flattab["FILE"]]
-    ##arcfnames = [get_file(x, workdir, "d") for x in arctab["FILE"]]
     
     ## Get list of arcs to process
     ## TODO think about this a bit more!!! Which files go with what?
@@ -337,6 +318,28 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
     print("Spline GHLB extract took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "extract-splineghlb")
 
+def m2fs_lsf_trace(dbname, workdir, fiberconfig, calibconfig):
+    ## Run trace+profile on flats
+    if check_finished(workdir, "lsf-trace"): return
+    objnums = get_obj_nums(calibconfig)
+    fnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    all_good = True
+    for fname in np.unique(fnames):
+        for detection_scale_factor in [3,4,5,6,7]:
+            try:
+                m2fs_new_trace_orders(fname, fiberconfig, make_plot=True,
+                                      detection_scale_factor=detection_scale_factor)
+            except Exception as e:
+                print("new trace orders Failed {}".format(detection_scale_factor))
+                print(e)
+            else:
+                break
+        else:
+            print("ERROR: {} could not be traced! Run this manually (change midx)".format(fname))
+            all_good=False
+    if all_good:
+        mark_finished(workdir, "lsf-trace")
+
 #################################################
 # script to run
 #################################################
@@ -349,16 +352,16 @@ if __name__=="__main__":
         fiberconfigname = "data/Mg_wide_r.txt"
         throughput_fname = os.path.join(workdir,"Mg_wide_r_throughput.npy")
     else:
-        #dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-        #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
-        #calibconfigname = "nov2017run.txt"
-        #fiberconfigname = "data/Bulge_GC1_b.txt"
-        #throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
         dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b_arcs"
-        calibconfigname = "nov2017arcs.txt"
+        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
+        calibconfigname = "nov2017run.txt"
         fiberconfigname = "data/Bulge_GC1_b.txt"
         throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
+        #dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
+        #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b_arcs"
+        #calibconfigname = "nov2017arcs.txt"
+        #fiberconfigname = "data/Bulge_GC1_b.txt"
+        #throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(calibconfigname)
@@ -397,7 +400,9 @@ if __name__=="__main__":
     
     ### Scattered light subtraction
     m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)
-    
+    ### LSF
+    m2fs_lsf_trace(dbname, workdir, fiberconfig, calibconfig)    
+
     ### Simple sum extraction
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile
@@ -410,7 +415,61 @@ if __name__=="__main__":
     ### Spline extraction with GHLB fit as profile
     m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
     
+    
+
     print("Total time for {} objects: {:.1f}s".format(len(objnums), time.time()-start))
+
+    import matplotlib.pyplot as plt
+    from m2fs_utils import psfexp2
+    import seaborn as sns
+    colors = sns.color_palette()
+    linestyles = ["-",":","--"]
+    objnums = get_obj_nums(calibconfig)
+    fnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    all_good = True
+    iobjs_sky = [0,2,6,7,11,15]
+    
+    ysplot = np.linspace(-3,3)
+    skyprof = np.zeros_like(ysplot)
+    for i,fname in enumerate(np.unique(fnames)):
+        trace_coeffs, psfexp2_coeffs, traces_all_Rnorm_coeffs = \
+            np.load("{}/{}_{}.npy".format(os.path.dirname(fname), os.path.basename(fname)[:-5],
+                                          "fasttrace"))
+        for iobj in iobjs_sky:
+            skyprof += psfexp2(ysplot, *psfexp2_coeffs[iobj])
+    skyprof = skyprof/len(fnames)
+
+    fig, axes = plt.subplots(6,4,figsize=(6*4,4*6))
+    fig2, axes2 = plt.subplots(5,figsize=(5,20))
+    fig3, axes3 = plt.subplots(6,4,figsize=(6*4,4*6))
+    for i,fname in enumerate(np.unique(fnames)):
+        trace_coeffs, psfexp2_coeffs, traces_all_Rnorm_coeffs = \
+            np.load("{}/{}_{}.npy".format(os.path.dirname(fname), os.path.basename(fname)[:-5],
+                                          "fasttrace"))
+        for iobj in range(fiberconfig[0]):
+            ax = axes.flat[iobj]
+            ax.plot(ysplot, psfexp2(ysplot, *psfexp2_coeffs[iobj]))
+            ax.set_title(str(iobj))
+            ax.set_xlim(-3,3)
+            ax.set_ylim(0,1.5)
+
+            ax = axes2.flat[i]
+            ls='-'
+            color = 'b' if iobj in iobjs_sky else 'k'
+            zorder = 99 if iobj in iobjs_sky else -99
+            ax.plot(ysplot, psfexp2(ysplot, *psfexp2_coeffs[iobj]),
+                    ls=ls,color=color,lw=.5,zorder=zorder)
+            ax.plot(ysplot, skyprof, color='c', lw=2, alpha=.5)
+
+            ax = axes3.flat[iobj]
+            ax.plot(ysplot, psfexp2(ysplot, *psfexp2_coeffs[iobj])/skyprof)
+            ax.set_title(str(iobj))
+            ax.set_xlim(-3,3)
+            #ax.set_ylim(0,1.5)
+
+    fig.tight_layout()
+    fig2.tight_layout()
+    plt.show()
 
 def m2fs_frame_by_frame_ghlb_extract(dbname, workdir, fiberconfig, calibconfig):
     """

@@ -733,7 +733,7 @@ def m2fs_new_trace_orders(fname, fiberconfig,
                 mask[np.abs(_all_y - biweight_location(_all_y)) > 5*biweight_scale(_all_y)] = False
                 xmin, xmax = np.min(_all_x[mask]), np.max(_all_x[mask])
                 ymin, ymax = np.min(_all_y[mask]), np.max(_all_y[mask])
-                print("obj {} ord {}: x={}-{}, y={}-{}".format(iobj, iord, xmin, xmax, ymin, ymax))
+                #print("obj {} ord {}: x={}-{}, y={}-{}".format(iobj, iord, xmin, xmax, ymin, ymax))
                 XN, YN = np.meshgrid(np.arange(xmin, xmax+1), np.arange(ymin,ymax+1), indexing="ij")
                 RN = np.polyval(traces_all_Rnorm_coeffs[itrace], XN)
                 ysN = YN - np.polyval(trace_coeffs[itrace], XN)
