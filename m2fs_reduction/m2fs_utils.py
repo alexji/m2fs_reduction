@@ -684,7 +684,10 @@ def m2fs_new_trace_orders(fname, fiberconfig,
         # Note that X is not rectified, so we can't reliably do an X-dependent fit
     trace_output =  [trace_coeffs, traces_all_x, traces_all_y, traces_all_ys, traces_all_iobj, traces_all_iord, traces_all_Rnorm, traces_all_Rnorm_coeffs]
     
-    psfexp2_coeffs = np.zeros((Nobjs, 4))
+    Nparam = 3
+    #labels = ["ys_0","A","sigma","exponent"]
+    labels = ["A","sigma","exponent"]
+    psfexp2_coeffs = np.zeros((Nobjs, Nparam))
     if make_plot:
         ## Plot the actual data to fit and the best-fit
         Ncol = 4
@@ -692,7 +695,7 @@ def m2fs_new_trace_orders(fname, fiberconfig,
         if Ncol*Nrow < Nobjs: Nrow += 1
         fig, axes = plt.subplots(Nrow,Ncol, figsize=(8*Ncol, 6*Nrow))
     for iobj in range(Nobjs):
-        p0 = [0, 1.2, 2.3, 2.0]
+        p0 = [1.2, 2.3, 2.0]
         ysfit = np.concatenate([traces_all_ys[iobj*Norders + iord] for iord in range(Norders)])
         Rnormfit = np.concatenate([traces_all_Rnorm[iobj*Norders + iord] for iord in range(Norders)])
         popt, pcov = iterfit_psfexp2(ysfit, Rnormfit, p0)
@@ -713,9 +716,9 @@ def m2fs_new_trace_orders(fname, fiberconfig,
                     bbox_inches="tight")
         plt.close(fig)
         ## Plot the best-fit psfexp2 parameters
-        fig, axes = plt.subplots(1,4,figsize=(24,6))
-        labels = ["ys_0","A","sigma","exponent"]
-        for i in range(4):
+        fig, axes = plt.subplots(1,Nparam,figsize=(6*Nparam,6))
+        
+        for i in range(Nparam):
             axes[i].plot(psfexp2_coeffs[:,i],'o-')
             axes[i].set_xlabel(labels[i])
         fig.tight_layout(); fig.savefig("{}/{}_{}.png".format(os.path.dirname(fname), os.path.basename(fname)[:-5],
@@ -757,8 +760,8 @@ def iterfit_psfexp2(x,y,p0,maxiter=5,sigclip=5):
         Ngood = iigood.sum()
     popt, pcov = optimize.curve_fit(psfexp2, x[iigood], y[iigood], p0)
     return popt, pcov
-def psfexp2(x, x0, A, sigma, exponent):
-    return A * np.exp(-(np.abs(x-x0)/sigma)**exponent)
+def psfexp2(x, A, sigma, exponent):
+    return A * np.exp(-(np.abs(x)/sigma)**exponent)
 
 def m2fs_trace_orders(fname, fiberconfig,
                       midx=None,
@@ -1424,7 +1427,7 @@ def make_ghlb_feature_matrix(iobj, iord, L, ys, Sprime,
             polygrid[:,b+a*NH] = La[a]*Hb[b]
     return polygrid
 
-def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1, knots=None):
+def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1, knots=None, maxiters=5, verbose=True):
     """ R(L,y) = S(L) * P(L,y) """
     RP = R/P
     W = (P/eR)**2.
@@ -1436,19 +1439,33 @@ def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1, knots=None):
         knots = knots[1:-1]
     ## Fit B Spline
     iisort = np.argsort(L)
-    try:
-        Sfunc = interpolate.LSQUnivariateSpline(L[iisort], RP[iisort], knots, W[iisort])
-    except Exception as e:
-        print("ERROR: fit_S_with_profile: Failed to fit spline!")
-        print(e)
-        bad_knots_indices = []
-        for i in range(len(knots)-1):
-            if np.sum(np.logical_and(L >= knots[i], L < knots[i+1])) <= 0:
-                print("Bad knot: i={}/{} {:.3f}-{:.3f}".format(i,Npix,knots[i],knots[i+1]))
-                bad_knots_indices.append(i+1)
-        print("The most common failure case is losing pixels at the edges of orders")
-        print("Eventually will cutting data and knots, then refit, but not today!")
-        import pdb; pdb.set_trace()
+    bad_knots = np.zeros_like(knots, dtype=bool)
+    bad_knots[knots > L.max()] = True
+    bad_knots[knots < L.min()] = True
+    for it in range(maxiters):
+        try:
+            Sfunc = interpolate.LSQUnivariateSpline(L[iisort], RP[iisort], knots[~bad_knots], W[iisort])
+        except Exception as e:
+            if verbose:
+                print("ERROR: fit_S_with_profile: Failed to fit spline on iter {}/{}!".format(it+1,maxiters))
+                print(e)
+                print("The most common failure case is losing pixels at the edges of orders")
+                print("Trying knot removal")
+            for i in range(len(knots)-1):
+                if np.sum(np.logical_and(L >= knots[i], L < knots[i+1])) <= 0:
+                    if verbose: print("Bad knot: i={}/{} {:.3f}-{:.3f}".format(i,Npix,knots[i],knots[i+1]))
+                    bad_knots[i] = True
+                    bad_knots[i+1] = True
+            print("{} bad knots".format(bad_knots.sum()))
+            if it+1==maxiters:
+                print("n={} k={} used knots={}".format(len(L),3,len(knots)-bad_knots.sum()))
+                print("Lmin,Lmax={:.3f},{:.3f}".format(L.min(), L.max()))
+                print("knotmin,knotmax={:.3f},{:.3f}".format(knots.min(), knots.max()))
+                raise e
+        else:
+            break
+    #else:
+    #    raise RuntimeError("Could not fit spline :(")
     return Sfunc
 def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
     ii = np.abs(ys) < ysmax

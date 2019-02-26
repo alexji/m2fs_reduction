@@ -304,7 +304,7 @@ def m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract,
     mark_finished(workdir, "extract-horneghlb")
 
 def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract,
-                             throughput_fname=None):
+                             throughput_fname=None, sigma=5):
     if check_finished(workdir, "extract-splineghlb"): return
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
@@ -314,7 +314,7 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
     start = time.time()
     for objfname, flatfname, flatfname2, arcfname in zip(objfnames, flatfnames, flatfnames2, arcfnames):
         m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=Nextract,
-                                 throughput_fname=throughput_fname)
+                                 throughput_fname=throughput_fname, sigma=sigma)
     print("Spline GHLB extract took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "extract-splineghlb")
 
@@ -352,16 +352,16 @@ if __name__=="__main__":
         fiberconfigname = "data/Mg_wide_r.txt"
         throughput_fname = os.path.join(workdir,"Mg_wide_r_throughput.npy")
     else:
-        dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
-        calibconfigname = "nov2017run.txt"
-        fiberconfigname = "data/Bulge_GC1_b.txt"
-        throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
         #dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-        #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b_arcs"
-        #calibconfigname = "nov2017arcs.txt"
+        #workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
+        #calibconfigname = "nov2017run.txt"
         #fiberconfigname = "data/Bulge_GC1_b.txt"
         #throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
+        dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
+        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b_arcs"
+        calibconfigname = "nov2017arcs.txt"
+        fiberconfigname = "data/Bulge_GC1_b.txt"
+        throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(calibconfigname)
@@ -413,7 +413,7 @@ if __name__=="__main__":
     ### Horne extraction with GHLB fit as profile
     m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
     ### Spline extraction with GHLB fit as profile
-    m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
+    m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname, sigma=10)
     
     
 
@@ -437,7 +437,7 @@ if __name__=="__main__":
                                           "fasttrace"))
         for iobj in iobjs_sky:
             skyprof += psfexp2(ysplot, *psfexp2_coeffs[iobj])
-    skyprof = skyprof/len(fnames)
+    skyprof = skyprof/(len(iobjs_sky)*len(np.unique(fnames)))
 
     fig, axes = plt.subplots(6,4,figsize=(6*4,4*6))
     fig2, axes2 = plt.subplots(5,figsize=(5,20))
@@ -469,6 +469,7 @@ if __name__=="__main__":
 
     fig.tight_layout()
     fig2.tight_layout()
+    fig3.tight_layout
     plt.show()
 
 def m2fs_frame_by_frame_ghlb_extract(dbname, workdir, fiberconfig, calibconfig):
