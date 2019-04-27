@@ -411,7 +411,7 @@ if __name__=="__main__":
         #throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
         dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
         workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
-        calibconfigname = "nov2017arcs.txt"
+        calibconfigname = "nov2017run.txt"
         fiberconfigname = "data/Bulge_GC1_b.txt"
         throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
     assert os.path.exists(dbname)
@@ -456,14 +456,16 @@ if __name__=="__main__":
     ## Use features to fit Xccd,Yccd(obj, order, lambda)
     m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig, calibconfig)
     
-    print("Total time for {} objects: {:.1f}s".format(len(objnums), time.time()-start))
-def tmp():
-    
-    
+    ##### Extract flats and objects
     ### Simple sum extraction
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile
     m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
+
+    print("Total time for {} objects: {:.1f}s".format(len(objnums), time.time()-start))
+def tmp():
+    
+    
     ### Flat processing
     ### GHLB fit flats as profiles
     m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig)

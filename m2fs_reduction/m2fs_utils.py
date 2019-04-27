@@ -2366,50 +2366,64 @@ def pick_throughput_orders(fiberconfig):
     if Nord == 2: raise NotImplementedError("Need to decide what to do for 2 orders")
     return np.arange(Nord)[1:-1]
 
-def m2fs_pixel_flat(flatfname, fiberconfig, yscut):
+def m2fs_pixel_flat(flatfname, fiberconfig, Npixcut):
     """
     Use the flat to find pixel variations.
+    DON'T USE THIS. It doesn't work.
     """
-
     R, eR, header = read_fits_two(flatfname)
-    shape = R.shape
-    X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
+    #shape = R.shape
+    #X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
     
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
-    trstdfn = m2fs_load_tracestd_function(flatfname, fiberconfig)
-    def ysfunc(iobj, iord, X, Y):
-        yarr = tracefn(iobj,iord,X)
-        sarr = trstdfn(iobj,iord,X)
-        return (Y-yarr)/(sarr)
 
     ## This is the output array
     pixelflat = np.ones_like(R)
     
+    Npixuse = Npixcut-1
+
     Nobj, Nord = fiberconfig[0], fiberconfig[1]
     for iobj in range(Nobj):
         for iord in range(Nord):
-            ## Get 1D arrays of relevant pixels based on yscut
-            ys = ysfunc(iobj, iord, X, Y)
-            Yarr, eYarr, indices = make_ghlb_y_matrix(iobj, iord, ys, R, eR, yscut=yscut)
-            this_X = X[indices]
+            ## Set up empty array to process and put back
             Xmin, Xmax = fiberconfig[4][iord]
-            Npix = (Xmax-Xmin+1)//pixel_spacing
-            iiXcut = (Xmin <= this_X) & (this_X <= Xmax)
-            indices = tuple([ix[iiXcut] for ix in indices])
-            Yarr, eYarr = Yarr[iiXcut], eYarr[iiXcut]
-            ys = ys[indices]
+            Xarr = np.arange(Xmin,Xmax+1)
+            Npix = len(Xarr)
+            medarr = np.zeros((Npix,2*Npixcut+1))
+            ## Follow the trace and get relevant pixels in every location
+            y0 = tracefn(iobj, iord, Xarr)
+            ix_y = np.round(y0).astype(int)
+            ix_ymin = ix_y-Npixcut
+            ix_ymax = ix_y+Npixcut
+            for j in range(2*Npixcut+1):
+                dj = j - Npixcut
+                medarr[:,j] = R[Xarr,ix_y+dj]
+            ## Rectify the pixels in just the y direction
+            #yloc = y0[:,np.newaxis] + np.arange(-Npixcut,Npixcut+1)[np.newaxis,:]
+            yoff = y0-ix_y
             
-            ## We want a nice 2D array for fast median convolution
-            # X is already good, just offset to start at 0
-            this_X = this_X - this_X.min()
-            # Pixelate ys
-            ## TODO Use np.unique to sort into bins by this_X
-            #np.unique()
-            #dys = np.median(trstdfn(iobj, iord, this_X))
-            #Npix_ys = yscut/dys
-            #this_yspix = ys/dys
-            
-            outarr = np.zeros((Npix, Npix_ys)) + np.nan
-            outarr[this_X, this_yspix] = R[indices]
-            
-            
+            def mapping1(x):
+                return x[0], yoff[x[0]]+x[1]
+            def mapping2(x):
+                return x[0], -yoff[x[0]]+x[1]
+            rect_medarr = ndimage.geometric_transform(medarr, mapping1, mode='nearest')
+            # The typical value as a function of X
+            medX = np.median(rect_medarr,axis=1)
+            #medY = np.median(rect_medarr,axis=0)
+            #medR = medX[:,np.newaxis] * medY[np.newaxis,:]
+            #medR = medR * np.median(rect_medarr)/np.median(medR)
+            medR = ndimage.median_filter(rect_medarr, (9,1), mode='nearest')
+            np.save("medarr.npy",medarr)
+            np.save("rect_medarr.npy",rect_medarr)
+            np.save("rect_smooth.npy",medR)
+            rect_ratio = rect_medarr/medR
+            np.save("rect_ratio.npy",rect_ratio)
+            # Shift back
+            medR = ndimage.geometric_transform(medR, mapping2, mode='nearest')
+            np.save("smooth.npy",medR)
+            medR = medarr/medR
+            #medR = medR/np.median(medR)
+            for j in range(2*Npixuse+1):
+                dj = j - Npixuse
+                pixelflat[Xarr,ix_y+dj] = medR[:,j]
+    return pixelflat
