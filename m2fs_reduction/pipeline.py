@@ -321,7 +321,7 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
 #################################################
 if __name__=="__main__":
     start = time.time()
-    if True:
+    if False:
         dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
         workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
         calibconfigname = "nov2017run.txt"
@@ -379,13 +379,13 @@ if __name__=="__main__":
     
     ### Scattered light subtraction
     m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)
-    ### Flat processing
-    m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig)
     
     ### Simple sum extraction
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile
     m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
+    ### Flat processing
+    m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig)
     ### Horne extraction with GHLB fit as profile
     m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
     ### Spline extraction with GHLB fit as profile

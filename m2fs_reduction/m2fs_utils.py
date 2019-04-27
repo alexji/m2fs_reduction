@@ -821,8 +821,8 @@ def m2fs_trace_orders(fname, fiberconfig,
         fig.savefig("{}/{}_traceresid.png".format(
                 os.path.dirname(fname), os.path.basename(fname)[:-5]),
                     bbox_inches="tight")
-        plt.close(fig)
-            
+        plt.close(fig) 
+           
         fig, ax = plt.subplots(figsize=(8,8))
         stdevs = np.zeros((nx,npeak))
         #for j in range(npeak):
@@ -1641,6 +1641,7 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     outfname = os.path.join(outdir,name+"_sum_specs.fits")
     
     R, eR, header = read_fits_two(objfname)
+    F, eF, header = read_fits_two(flatfname)
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
@@ -1651,6 +1652,7 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     
     # Wave, Flux, Err
     outspec = np.zeros((Nobj,Norder,Npix,3))
+    Foutspec = np.zeros((Nobj,Norder,Npix,3))
     used = np.zeros(R.shape, dtype=int)
     for iobj in range(Nobj):
         for iord in range(Norder):
@@ -1667,6 +1669,16 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
             outspec[iobj, iord, Xarr, 1] = np.sum(data_to_sum, axis=1)/fiber_thru[iobj]
             outspec[iobj, iord, Xarr, 2] = np.sqrt(np.sum(vars_to_sum, axis=1))/fiber_thru[iobj]
             
+            # Extract flat using identical pixels
+            Fdata_to_sum =  F[X_to_get, Y_to_get]
+            Fvars_to_sum = eF[X_to_get, Y_to_get]**2.
+            Foutspec[iobj, iord, Xarr, 0] = Larr
+            Foutspec[iobj, iord, Xarr, 1] = np.sum(Fdata_to_sum, axis=1)/fiber_thru[iobj]
+            # Rescale flat
+            Fscale = np.nanmedian(Foutspec[iobj, iord, Xarr, 1])
+            Foutspec[iobj, iord, Xarr, 1] = Foutspec[iobj, iord, Xarr, 1]/Fscale
+            Foutspec[iobj, iord, Xarr, 2] = np.sqrt(np.sum(Fvars_to_sum, axis=1))/fiber_thru[iobj]/Fscale
+            
             used[X_to_get, Y_to_get] += 1
     
     header["NEXTRACT"] = Nextract
@@ -1681,11 +1693,7 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
         fibnum = "".join(lines[iobj])
         header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
     
-    
-    write_fits_one(outfname, outspec, header)
-    #hdu1 = fits.PrimaryHDU(d1.T, h)
-    #hdulist = fits.HDUList([hdu1])
-    #hdulist.writeto(outfname, overwrite=True)
+    write_fits_two(outfname, outspec, Foutspec, header)
     
     print("Sum extract of {} took {:.1f}".format(name, time.time()-start))
     if make_plot:
@@ -1720,6 +1728,7 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
     
     # Wave, Flux, Err
     outspec = np.zeros((Nobj,Norder,Npix,3))
+    Foutspec = np.zeros((Nobj,Norder,Npix,3))
     used = np.zeros(R.shape, dtype=int)
     model = np.zeros_like(R)
     for iobj in range(Nobj):
@@ -1729,6 +1738,7 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
             Larr = Lfunc(iobj, iord, Xarr, Yarr)
             # Approximate X as constant wavelength over the full Y profile
             outspec[iobj, iord, Xarr, 0] = Larr
+            Foutspec[iobj, iord, Xarr, 0] = Larr
             
             X_to_get = np.vstack([Xarr for _ in dy]).T
             Y_to_get = (offsets[Xarr,:] + Yarr[:,np.newaxis]).astype(int)
@@ -1738,6 +1748,10 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
             errs_to_sum = eR[X_to_get, Y_to_get]
             ivar_to_sum = errs_to_sum**-2.
             ivar_to_sum[~np.isfinite(ivar_to_sum)] = 0.
+            Fdata_to_sum =  F[X_to_get, Y_to_get]
+            Ferrs_to_sum = eF[X_to_get, Y_to_get]
+            Fivar_to_sum = Ferrs_to_sum**-2.
+            Fivar_to_sum[~np.isfinite(Fivar_to_sum)] = 0.
             # Get profile
             flat_to_sum =  F[X_to_get, Y_to_get] 
             flat_to_sum[flat_to_sum < 0] = 0.
@@ -1752,6 +1766,8 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
                 ## TODO the problem is that the initial estimate is bad
                 mask = np.abs(specest[:,np.newaxis] * flat_to_sum - data_to_sum) < sigma * errs_to_sum
                 specest = np.sum(mask * flat_to_sum * data_to_sum * ivar_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * ivar_to_sum, axis=1)
+                Fspecest = np.sum(mask * flat_to_sum * Fdata_to_sum * Fivar_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * Fivar_to_sum, axis=1)
+
                 ## TODO recalculate pixel variances?
                 Nmask = np.sum(mask)
                 if lastNmask == Nmask: break
@@ -1760,6 +1776,12 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
             outspec[iobj, iord, Xarr, 1] = specest/fiber_thru[iobj]
             outspec[iobj, iord, Xarr, 2] = np.sqrt(varest)/fiber_thru[iobj]
             model[X_to_get, Y_to_get] += flat_to_sum * specest[:,np.newaxis]
+            Fvarest = np.sum(mask * flat_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * Fivar_to_sum, axis=1)
+            Foutspec[iobj, iord, Xarr, 1] = Fspecest/fiber_thru[iobj]
+            # Rescale flat
+            Fscale = np.nanmedian(Foutspec[iobj, iord, Xarr, 1])
+            Foutspec[iobj, iord, Xarr, 1] = Foutspec[iobj, iord, Xarr, 1]/Fscale
+            Foutspec[iobj, iord, Xarr, 2] = np.sqrt(Fvarest)/fiber_thru[iobj]/Fscale
     header["NEXTRACT"] = Nextract
     header.add_history("m2fs_horne_extract: horne extraction with window 2*{}+1".format(Nextract))
     header.add_history("m2fs_horne_extract: flat: {}".format(flatfname))
@@ -1772,7 +1794,7 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
         fibnum = "".join(lines[iobj])
         header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
     
-    write_fits_one(outfname, outspec, header)
+    write_fits_two(outfname, outspec, Foutspec, header)
     write_fits_one(outfname_resid, R - model, header)
 
     print("Horne extract of {} took {:.1f}".format(name, time.time()-start))
@@ -1952,7 +1974,10 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fibercon
             outspec[iobj, iord, Xarr, 1] = specest/fiber_thru[iobj]
             outspec[iobj, iord, Xarr, 2] = np.sqrt(varest)/fiber_thru[iobj]
             model[X_to_get, Y_to_get] += flat_to_sum * specest[:,np.newaxis]
-    
+            
+            Foutspec[iobj, iord, Xarr, 1] = specest/fiber_thru[iobj]
+            Foutspec[iobj, iord, Xarr, 2] = np.sqrt(varest)/fiber_thru[iobj]
+
     header["NEXTRACT"] = Nextract
     header.add_history("m2fs_spline_ghlb_extract: spline extraction with window 2*{}+1 and GHLB profile".format(Nextract))
     header.add_history("m2fs_spline_ghlb_extract: flat: {}".format(flatfname))
@@ -2119,3 +2144,51 @@ def pick_throughput_orders(fiberconfig):
     if Nord == 1: return np.array([0])
     if Nord == 2: raise NotImplementedError("Need to decide what to do for 2 orders")
     return np.arange(Nord)[1:-1]
+
+def m2fs_pixel_flat(flatfname, fiberconfig, yscut):
+    """
+    Use the flat to find pixel variations.
+    """
+
+    R, eR, header = read_fits_two(flatfname)
+    shape = R.shape
+    X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
+    
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    trstdfn = m2fs_load_tracestd_function(flatfname, fiberconfig)
+    def ysfunc(iobj, iord, X, Y):
+        yarr = tracefn(iobj,iord,X)
+        sarr = trstdfn(iobj,iord,X)
+        return (Y-yarr)/(sarr)
+
+    ## This is the output array
+    pixelflat = np.ones_like(R)
+    
+    Nobj, Nord = fiberconfig[0], fiberconfig[1]
+    for iobj in range(Nobj):
+        for iord in range(Nord):
+            ## Get 1D arrays of relevant pixels based on yscut
+            ys = ysfunc(iobj, iord, X, Y)
+            Yarr, eYarr, indices = make_ghlb_y_matrix(iobj, iord, ys, R, eR, yscut=yscut)
+            this_X = X[indices]
+            Xmin, Xmax = fiberconfig[4][iord]
+            Npix = (Xmax-Xmin+1)//pixel_spacing
+            iiXcut = (Xmin <= this_X) & (this_X <= Xmax)
+            indices = tuple([ix[iiXcut] for ix in indices])
+            Yarr, eYarr = Yarr[iiXcut], eYarr[iiXcut]
+            ys = ys[indices]
+            
+            ## We want a nice 2D array for fast median convolution
+            # X is already good, just offset to start at 0
+            this_X = this_X - this_X.min()
+            # Pixelate ys
+            ## TODO Use np.unique to sort into bins by this_X
+            #np.unique()
+            #dys = np.median(trstdfn(iobj, iord, this_X))
+            #Npix_ys = yscut/dys
+            #this_yspix = ys/dys
+            
+            outarr = np.zeros((Npix, Npix_ys)) + np.nan
+            outarr[this_X, this_yspix] = R[indices]
+            
+            
