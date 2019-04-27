@@ -9,7 +9,7 @@ from m2fs_utils import read_fits_two, write_fits_two, m2fs_parse_fiberconfig
 from m2fs_utils import m2fs_4amp
 from m2fs_utils import m2fs_make_master_dark, m2fs_subtract_one_dark
 from m2fs_utils import m2fs_make_master_flat, m2fs_trace_orders
-from m2fs_utils import m2fs_new_trace_orders
+from m2fs_utils import m2fs_new_trace_orders, m2fs_new_trace_orders_multidetect
 from m2fs_utils import m2fs_wavecal_find_sources_one_arc
 from m2fs_utils import m2fs_wavecal_identify_sources_one_arc
 from m2fs_utils import m2fs_wavecal_fit_solution_one_arc
@@ -109,35 +109,69 @@ def m2fs_darksub(dbname, workdir):
             m2fs_subtract_one_dark(fname, outfname, dark, darkerr, darkheader)
     
     mark_finished(workdir, "darksub")
-def m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig):
-    if check_finished(workdir, "traceflat"): return
+def m2fs_traceflat_fast(dbname, workdir, fiberconfig, calibconfig, suffix="d"):
+    if check_finished(workdir, "traceflatfast-{}".format(suffix)): return
+    print("Running traceflatfast with suffix {}".format(suffix))
     
     ## Make a master flat
-    masterflatname = os.path.join(workdir, "master_flat.fits")
+    masterflatname = os.path.join(workdir, "master_flat_{}.fits".format(suffix))
     tab = load_db(dbname)
-    flattab = tab[tab["EXPTYPE"]=="Flat"]
-    print("Found {} flatframes".format(len(flattab)))
-    fnames = [get_file(x, workdir, "d") for x in flattab["FILE"]]
+    if suffix=="d":
+        flattab = tab[tab["EXPTYPE"]=="Flat"]
+        fnames = [get_file(x, workdir, suffix) for x in flattab["FILE"]]
+    else:
+        objnums = get_obj_nums(calibconfig)
+        fnames = [get_flat_file(objnum, dbname, workdir, calibconfig, suffix) for objnum in objnums]
+    print("Found {} flatframes".format(len(fnames)))
     print("Running master flat (not really used right now)")
     m2fs_make_master_flat(fnames, masterflatname)
+    # Trace master flat
+    m2fs_new_trace_orders_multidetect(masterflatname, fiberconfig, make_plot=True)
+    
+    ## Trace individual flats
+    objnums = get_obj_nums(calibconfig)
+    fnames = [get_flat_file(objnum, dbname, workdir, calibconfig, suffix) for objnum in objnums]
+    for fname in np.unique(fnames):
+        m2fs_new_trace_orders_multidetect(fname, fiberconfig, make_plot=True)
+    mark_finished(workdir, "traceflatfast-{}".format(suffix))
+def m2fs_traceflat_slow(dbname, workdir, fiberconfig, calibconfig, suffix="ds"):
+    if check_finished(workdir, "traceflatslow-{}".format(suffix)): return
+    print("Running traceflatslow with suffix {}".format(suffix))
+    
+    ## Make a master flat
+    masterflatname = os.path.join(workdir, "master_flat_{}.fits".format(suffix))
+    tab = load_db(dbname)
+    if suffix=="d":
+        flattab = tab[tab["EXPTYPE"]=="Flat"]
+        fnames = [get_file(x, workdir, suffix) for x in flattab["FILE"]]
+    else:
+        objnums = get_obj_nums(calibconfig)
+        fnames = [get_flat_file(objnum, dbname, workdir, calibconfig, suffix) for objnum in objnums]
+    print("Found {} flatframes".format(len(fnames)))
+    print("Running master flat (not really used right now)")
+    m2fs_make_master_flat(fnames, masterflatname)
+    # Trace master flat
     m2fs_trace_orders(masterflatname, fiberconfig, trace_degree=7, stdev_degree=3, make_plot=True)
     
-    ## Run trace on individual flats
+    ## Trace individual flats
     objnums = get_obj_nums(calibconfig)
-    fnames = [get_flat_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
+    fnames = [get_flat_file(objnum, dbname, workdir, calibconfig, suffix) for objnum in objnums]
     for fname in np.unique(fnames):
         m2fs_trace_orders(fname, fiberconfig, make_plot=True)
-    mark_finished(workdir, "traceflat")
+    mark_finished(workdir, "traceflatslow-{}".format(suffix))
 
-def m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname):
+def m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname, masterflatname):
     if check_finished(workdir, "throughput"): return
     tab = load_db(dbname)
     tab = tab[tab["EXPTYPE"]=="Thru"]
     Nthru = len(tab)
     thrufnames = [get_file(row["FILE"], workdir, "d") for row in tab]
     thrufnames_scat = [get_file(row["FILE"], workdir, "ds") for row in tab]
+    
     # Calculate throughput corrections
-    m2fs_process_throughput_frames(thrufnames, thrufnames_scat, throughput_fname, fiberconfig)
+    m2fs_process_throughput_frames(thrufnames, thrufnames_scat, throughput_fname,
+                                   masterflatname, fiberconfig,
+                                   detection_scale_factors=[1,2,3])
     mark_finished(workdir, "throughput")
 
 def m2fs_wavecal_find_sources(dbname, workdir, calibconfig):
@@ -376,7 +410,7 @@ if __name__=="__main__":
         #fiberconfigname = "data/Bulge_GC1_b.txt"
         #throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
         dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSb.db"
-        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b_arcs"
+        workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/b"
         calibconfigname = "nov2017arcs.txt"
         fiberconfigname = "data/Bulge_GC1_b.txt"
         throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
@@ -401,13 +435,19 @@ if __name__=="__main__":
     ### Prep data
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
-
-    ### Throughput correction with twilight flats
-    m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname)
-    ### Trace flat
-    m2fs_traceflat(dbname, workdir, fiberconfig, calibconfig)
     
-    ### M2FS wavecal
+    ###### Tracing, scattered light
+    ## Quick flat trace and object profile estimate
+    m2fs_traceflat_fast(dbname, workdir, fiberconfig, calibconfig, suffix="d")
+    ## Subtract scattered light
+    m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)
+    ## Slower/more accurate flat trace and object profile AFTER scattered light subtraction
+    m2fs_traceflat_slow(dbname, workdir, fiberconfig, calibconfig, suffix="ds")
+    ## Throughput correction with twilight flats and master flat trace (includes scattered light)
+    m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname,
+                    get_file("master_flat",workdir,"_ds"))
+    
+    ###### Wavelength Calibration
     ## Find sources in 2D arc spectrum (currently a separate step running sextractor)
     m2fs_wavecal_find_sources(dbname, workdir, calibconfig)
     # NOTE: IF AN ARC HAS NOT BEEN IDENTIFIED, IT NEEDS TO BE DONE MANUALLY NOW
@@ -416,11 +456,10 @@ if __name__=="__main__":
     ## Use features to fit Xccd,Yccd(obj, order, lambda)
     m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig, calibconfig)
     
-    ### Scattered light subtraction
-    m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)
-    ### LSF
-    m2fs_lsf_trace(dbname, workdir, fiberconfig, calibconfig)    
-
+    print("Total time for {} objects: {:.1f}s".format(len(objnums), time.time()-start))
+def tmp():
+    
+    
     ### Simple sum extraction
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile
@@ -489,24 +528,3 @@ if __name__=="__main__":
     fig2.tight_layout()
     fig3.tight_layout
     plt.show()
-
-def m2fs_frame_by_frame_ghlb_extract(dbname, workdir, fiberconfig, calibconfig):
-    """
-    ### Frame-by-frame extraction
-    ## Fit GHLB for each object individually
-    ## This does NOT really work: the sky fibers are so faint that they have a really bad GHLB profile
-    ## They get pulled around everywhere by cosmics, Littrow ghost, etc
-    ## (The objects themselves seem fine!)
-    ## Also, note that extended outliers (cosmic rays along a trace, bad lines/columns) are not removed
-    ## Hopefully this can be remedied by fitting multiple exposures
-    """
-    objnums = get_obj_nums(calibconfig)
-    objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
-    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
-    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
-    
-    start = time.time()
-    for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
-        m2fs_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, yscut=2.0, deg=[2,10], sigma=5.0,
-                          make_plot=True, make_obj_plots=True)
-    print("Fitting GHLB to objects took {:.1f}".format(time.time()-start))

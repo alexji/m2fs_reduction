@@ -609,6 +609,30 @@ def m2fs_load_tracestd_function(flatname, fiberconfig):
         return functions[itrace](x)
     return tracestd_func
 
+def m2fs_new_trace_orders_multidetect(fname, fiberconfig, detection_scale_factors = [3,4,5,6,7],
+                                      **kwargs):
+    """ Iterate through different detection scale factors for tracing flats """
+    detection_scale_factor = kwargs.pop("detection_scale_factor", None)
+    if detection_scale_factor is not None:
+        print("Warning: ignoring keyword detection_scale_factor, trying {}".format(detection_scale_factors))
+    
+    all_good = True
+    for detection_scale_factor in detection_scale_factors:
+        try:
+            m2fs_new_trace_orders(fname, fiberconfig,
+                                  detection_scale_factor=detection_scale_factor,
+                                  **kwargs)
+        except Exception as e:
+            print("new trace orders Failed {}".format(detection_scale_factor))
+            print(e)
+        else:
+            break
+    else:
+        print("ERROR: {} could not be traced! Run this manually (change midx)".format(fname))
+        all_good=False
+        raise RuntimeError("Could not trace flat")
+    return all_good
+
 def m2fs_new_trace_orders(fname, fiberconfig,
                           midx=None,
                           detection_scale_factor=7.0,
@@ -645,14 +669,15 @@ def m2fs_new_trace_orders(fname, fiberconfig,
         Ndiff = detections.sum() - cleaned_detections.sum()
         print("Removed {} pixels below scale {}".format(Ndiff, noise_removal_scale))
         detections = cleaned_detections
+    if make_plot: write_array("detections", detections)
     # Segment detected pixels into traces, using midx as the initial seeds of the watershed algorithm
     trace_peaks = np.where(np.diff(detections[midx]) == -1)[0]
     markers = np.zeros_like(detections, dtype=bool)
     markers[midx, trace_peaks] = True
     markers, num_peaks = ndimage.label(markers)
-    if fiber_count_check: assert num_peaks == expected_peaks, num_peaks
+    if fiber_count_check: assert num_peaks == expected_peaks, "Found {}/{} peaks".format(num_peaks,expected_peaks)
     segmentation = morphology.watershed(detections, markers, mask=detections.astype(bool))
-    #if make_plot: write_array("segmentation", segmentation)
+    if make_plot: write_array("segmentation", segmentation)
     
     # Fit traces
     trace_coeffs = np.zeros((num_peaks, trace_degree+1))
@@ -685,8 +710,8 @@ def m2fs_new_trace_orders(fname, fiberconfig,
     trace_output =  [trace_coeffs, traces_all_x, traces_all_y, traces_all_ys, traces_all_iobj, traces_all_iord, traces_all_Rnorm, traces_all_Rnorm_coeffs]
     
     Nparam = 3
-    #labels = ["ys_0","A","sigma","exponent"]
     labels = ["A","sigma","exponent"]
+    ix_sigma, ix_exponent = 1,2;
     psfexp2_coeffs = np.zeros((Nobjs, Nparam))
     if make_plot:
         ## Plot the actual data to fit and the best-fit
@@ -746,6 +771,20 @@ def m2fs_new_trace_orders(fname, fiberconfig,
         write_array("fasttracemodel", model)
     outfname = "{}/{}_{}.npy".format(os.path.dirname(fname), os.path.basename(fname)[:-5], "fasttrace")
     np.save(outfname, [trace_coeffs, psfexp2_coeffs, traces_all_Rnorm_coeffs])
+    fname1, fname2 = m2fs_get_trace_fnames(fname)
+    np.savetxt(fname1, trace_coeffs)
+    # FWHM of the psfexp2 is 2 sigma (ln5)**(1/exponent)
+    # FWHM of gaussian is 2.355 sigma_gauss
+    # The second column will just be 0: for now, we will not let sigma_gauss vary across the chip.
+    coeff2 = np.zeros((Nobjs*Norders,2))
+    for iobj in range(Nobjs):
+        for iord in range(Norders):
+            itrace = iobj*Norders + iord
+            sigma = psfexp2_coeffs[iobj,ix_sigma]
+            exponent = psfexp2_coeffs[iobj,ix_exponent]
+            sigma_gauss = (2/2.355) * sigma * (np.log(5))**(1/exponent)
+            coeff2[itrace,0] = sigma_gauss
+    np.savetxt(fname2, coeff2)
     print("m2fs_new_trace_orders took {:.1f}s".format(time.time()-start))
 def iterfit_psfexp2(x,y,p0,maxiter=5,sigclip=5):
     iigood = np.ones_like(x, dtype=bool)
@@ -1474,7 +1513,7 @@ def fit_Sprime(ys, L, R, eR, Npix, ysmax=1.0):
     return fit_S_with_profile(P, L, R, eR, Npix)
     
 def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixcut,
-                                  badcols=[], deg=[5,5], sigma=3.0, maxiter=10,
+                                  badcolranges=[], deg=[5,5], sigma=3.0, maxiter=10,
                                   manual_tracefn=None,
                                   verbose=True, make_plot=True):
     """
@@ -1488,6 +1527,8 @@ def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixc
     note: arcfname is not used.
     """
     start = time.time()
+    print("Fitting scattered light with Npixcut={} degree={} sigma={:.1f} maxiter={}".format(Npixcut,deg,sigma,maxiter))
+    
     outdir = os.path.dirname(fname)
     assert fname.endswith(".fits")
     name = os.path.basename(fname)[:-5]
@@ -1499,7 +1540,6 @@ def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixc
     X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
     used = np.zeros_like(R, dtype=bool)
     
-    #ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Npixcut = int(Npixcut)
     dy = np.arange(-Npixcut, Npixcut+1)
     Npix = R.shape[0]
@@ -2208,17 +2248,20 @@ def quick_1d_extract(objfname, flatfname, fiberconfig, outfname=None, Nextract=4
     make_multispec(outfname, [onedarcs.T], ["sum extract spectrum"])
 
 def m2fs_process_throughput_frames(thrunames, thruscatnames, outfname,
+                                   flatfname,
                                    fiberconfig,
+                                   detection_scale_factors=[1,2,3,4,5],
                                    Nextract=4,
                                    redo_scattered_light=False, 
                                    scattrace_ythresh=200, scattrace_nthresh=1.9, scat_Npixcut=13, scat_sigma=3.0, scat_deg=[5,5],
                                    make_plot=True):
     """
     Given a set of frames to use for throughput (e.g. twilight frames):
-    * trace orders
     * subtract scattered light
     * extract spectra
     * calculate throughput
+
+    flatfname is used for the trace
     
     Output an array of Nobj, Norder which is the throughput in that order medianed across all the input throughput frames.
     """
@@ -2237,8 +2280,10 @@ def m2fs_process_throughput_frames(thrunames, thruscatnames, outfname,
         if not os.path.exists(thruscatname) or redo_scattered_light:
             start2 = time.time()
             print("m2fs_process_throughput_frames: trace and scattered light {} -> {}".format(thruname, thruscatname))
-            m2fs_trace_orders(thruname, fiberconfig, make_plot=make_plot, ythresh=scattrace_ythresh, nthresh=scattrace_nthresh)
-            m2fs_subtract_scattered_light(thruname, thruname, None, fiberconfig,
+            #m2fs_trace_orders(thruname, fiberconfig, make_plot=make_plot, ythresh=scattrace_ythresh, nthresh=scattrace_nthresh)
+            #m2fs_subtract_scattered_light(thruname, thruname, None, fiberconfig,
+            #                              make_plot=make_plot, Npixcut=scat_Npixcut, sigma=scat_sigma, deg=scat_deg)
+            m2fs_subtract_scattered_light(thruname, flatfname, None, fiberconfig,
                                           make_plot=make_plot, Npixcut=scat_Npixcut, sigma=scat_sigma, deg=scat_deg)
             print("m2fs_process_throughput_frames: Took {:.1f}s".format(time.time()-start2))
         elif os.path.exists(thruscatname):
@@ -2247,7 +2292,7 @@ def m2fs_process_throughput_frames(thrunames, thruscatnames, outfname,
         ## Extract
         start2 = time.time()
         thru1dfname = os.path.join(workdir, os.path.basename(thruname)[:-5]+".1d.ms.fits")
-        quick_1d_extract(thruscatname, thruname, fiberconfig, Nextract=Nextract,
+        quick_1d_extract(thruscatname, flatfname, fiberconfig, Nextract=Nextract,
                          outfname=thru1dfname)
         print("m2fs_process_throughput_frames extraction: Took {:.1f}s -> {}".format(time.time()-start2, thru1dfname))
         
