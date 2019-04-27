@@ -273,14 +273,13 @@ def m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig):
     if check_finished(workdir, "extract-fitflat"): return
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
-    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
-    flatfnames2 = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
     arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     start = time.time()
     done = []
-    for flatfname, flatfname2, arcfname in zip(flatfnames, flatfnames2, arcfnames):
+    for flatfname, arcfname in zip(flatfnames, arcfnames):
         if flatfname in done: continue
-        m2fs_ghlb_extract(flatfname2, flatfname, arcfname, fiberconfig, yscut=2.5, deg=[0,10], sigma=5.0,
+        m2fs_ghlb_extract(flatfname, flatfname, arcfname, fiberconfig, yscut=2.5, deg=[0,10], sigma=5.0,
                           make_plot=True, make_obj_plots=True)
         done.append(flatfname)
     print("Fitting GHLB to flats took {:.1f}".format(time.time()-start))
@@ -320,37 +319,16 @@ def m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract,
     
     mark_finished(workdir, "extract-horneflat")
 
-def m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig):
-    if check_finished(workdir, "extract-fitflat"): return
-    objnums = get_obj_nums(calibconfig)
-    objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
-    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
-    flatfnames2 = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
-    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
-    start = time.time()
-    done = []
-    for flatfname, flatfname2, arcfname in zip(flatfnames, flatfnames2, arcfnames):
-        if flatfname in done: continue
-        try:
-            m2fs_ghlb_extract(flatfname2, flatfname, arcfname, fiberconfig, yscut=2.5, deg=[0,10], sigma=5.0,
-                              make_plot=True, make_obj_plots=True)
-        except:
-            import pdb; pdb.set_trace()
-        done.append(flatfname)
-    print("Fitting GHLB to flats took {:.1f}".format(time.time()-start))
-    mark_finished(workdir, "extract-fitflat")
-
 def m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract,
                             throughput_fname=None):
     if check_finished(workdir, "extract-horneghlb"): return
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
-    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
-    flatfnames2 = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
     arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     start = time.time()
-    for objfname, flatfname, flatfname2, arcfname in zip(objfnames, flatfnames, flatfnames2, arcfnames):
-        m2fs_horne_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=Nextract,
+    for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
+        m2fs_horne_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract,
                                 throughput_fname=throughput_fname)
     print("Horne GHLB extract took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "extract-horneghlb")
@@ -360,12 +338,11 @@ def m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract
     if check_finished(workdir, "extract-splineghlb"): return
     objnums = get_obj_nums(calibconfig)
     objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
-    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
-    flatfnames2 = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
     arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
     start = time.time()
-    for objfname, flatfname, flatfname2, arcfname in zip(objfnames, flatfnames, flatfnames2, arcfnames):
-        m2fs_spline_ghlb_extract(objfname, flatfname, flatfname2, arcfname, fiberconfig, Nextract=Nextract,
+    for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
+        m2fs_spline_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract,
                                  throughput_fname=throughput_fname, sigma=sigma)
     print("Spline GHLB extract took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "extract-splineghlb")
@@ -461,72 +438,13 @@ if __name__=="__main__":
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile
     m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
-
-    print("Total time for {} objects: {:.1f}s".format(len(objnums), time.time()-start))
-def tmp():
     
-    
-    ### Flat processing
     ### GHLB fit flats as profiles
     m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig)
     ### Horne extraction with GHLB fit as profile
     m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
     ### Spline extraction with GHLB fit as profile
     m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname, sigma=10)
-    
-    
 
     print("Total time for {} objects: {:.1f}s".format(len(objnums), time.time()-start))
 
-    import matplotlib.pyplot as plt
-    from m2fs_utils import psfexp2
-    import seaborn as sns
-    colors = sns.color_palette()
-    linestyles = ["-",":","--"]
-    objnums = get_obj_nums(calibconfig)
-    fnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
-    all_good = True
-    iobjs_sky = [0,2,6,7,11,15]
-    
-    ysplot = np.linspace(-3,3)
-    skyprof = np.zeros_like(ysplot)
-    for i,fname in enumerate(np.unique(fnames)):
-        trace_coeffs, psfexp2_coeffs, traces_all_Rnorm_coeffs = \
-            np.load("{}/{}_{}.npy".format(os.path.dirname(fname), os.path.basename(fname)[:-5],
-                                          "fasttrace"))
-        for iobj in iobjs_sky:
-            skyprof += psfexp2(ysplot, *psfexp2_coeffs[iobj])
-    skyprof = skyprof/(len(iobjs_sky)*len(np.unique(fnames)))
-
-    fig, axes = plt.subplots(6,4,figsize=(6*4,4*6))
-    fig2, axes2 = plt.subplots(5,figsize=(5,20))
-    fig3, axes3 = plt.subplots(6,4,figsize=(6*4,4*6))
-    for i,fname in enumerate(np.unique(fnames)):
-        trace_coeffs, psfexp2_coeffs, traces_all_Rnorm_coeffs = \
-            np.load("{}/{}_{}.npy".format(os.path.dirname(fname), os.path.basename(fname)[:-5],
-                                          "fasttrace"))
-        for iobj in range(fiberconfig[0]):
-            ax = axes.flat[iobj]
-            ax.plot(ysplot, psfexp2(ysplot, *psfexp2_coeffs[iobj]))
-            ax.set_title(str(iobj))
-            ax.set_xlim(-3,3)
-            ax.set_ylim(0,1.5)
-
-            ax = axes2.flat[i]
-            ls='-'
-            color = 'b' if iobj in iobjs_sky else 'k'
-            zorder = 99 if iobj in iobjs_sky else -99
-            ax.plot(ysplot, psfexp2(ysplot, *psfexp2_coeffs[iobj]),
-                    ls=ls,color=color,lw=.5,zorder=zorder)
-            ax.plot(ysplot, skyprof, color='c', lw=2, alpha=.5)
-
-            ax = axes3.flat[iobj]
-            ax.plot(ysplot, psfexp2(ysplot, *psfexp2_coeffs[iobj])/skyprof)
-            ax.set_title(str(iobj))
-            ax.set_xlim(-3,3)
-            #ax.set_ylim(0,1.5)
-
-    fig.tight_layout()
-    fig2.tight_layout()
-    fig3.tight_layout
-    plt.show()
