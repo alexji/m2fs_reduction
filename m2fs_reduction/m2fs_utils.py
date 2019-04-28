@@ -2236,7 +2236,7 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextrac
         fibnum = "".join(lines[iobj])
         header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
     
-    write_fits_one(outfname, outspec, Foutspec, header)
+    write_fits_two(outfname, outspec, Foutspec, header)
     write_fits_one(outfname_resid, R - model, header)
     
     print("Spline GHLB extract of {} took {:.1f}".format(name, time.time()-start))
