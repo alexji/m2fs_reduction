@@ -1488,19 +1488,33 @@ def fit_S_with_profile(P, L, R, eR, Npix, dx=0.1, knots=None, maxiters=5, verbos
             if verbose:
                 print("ERROR: fit_S_with_profile: Failed to fit spline on iter {}/{}!".format(it+1,maxiters))
                 print(e)
+            if "strictly increasing" in str(e):
+                ## Perturb the points by a negligible value
+                print("Probably due to identical wavelength values")
+                tiny_number = 1e-10
+                print("Perturbing duplicate wavelengths by a negligible amount ({:.1e}) to avoid identical x".format(tiny_number))
+                # https://stackoverflow.com/questions/30003068/get-a-list-of-all-indices-of-repeated-elements-in-a-numpy-array
+                vals, idx_start, count = np.unique(L[iisort], return_counts=True, return_index=True)
+                indices = list(filter(lambda x: x.size > 1, np.split(iisort, idx_start[1:])))
+                indices = np.concatenate(indices)
+                print("Found {} duplicate indices".format(indices.size))
+                
+                L[indices] = L[indices] + np.random.normal(scale=tiny_number, size=len(indices))
+                iisort = np.argsort(L)
+            else:
                 print("The most common failure case is losing pixels at the edges of orders")
                 print("Trying knot removal")
-            for i in range(len(knots)-1):
-                if np.sum(np.logical_and(L >= knots[i], L < knots[i+1])) <= 0:
-                    if verbose: print("Bad knot: i={}/{} {:.3f}-{:.3f}".format(i,Npix,knots[i],knots[i+1]))
-                    bad_knots[i] = True
-                    bad_knots[i+1] = True
-            print("{} bad knots".format(bad_knots.sum()))
-            if it+1==maxiters:
-                print("n={} k={} used knots={}".format(len(L),3,len(knots)-bad_knots.sum()))
-                print("Lmin,Lmax={:.3f},{:.3f}".format(L.min(), L.max()))
-                print("knotmin,knotmax={:.3f},{:.3f}".format(knots.min(), knots.max()))
-                raise e
+                for i in range(len(knots)-1):
+                    if np.sum(np.logical_and(L >= knots[i], L < knots[i+1])) <= 0:
+                        if verbose: print("Bad knot: i={}/{} {:.3f}-{:.3f}".format(i,Npix,knots[i],knots[i+1]))
+                        bad_knots[i] = True
+                        bad_knots[i+1] = True
+                print("{} bad knots".format(bad_knots.sum()))
+                if it+1==maxiters:
+                    print("n={} k={} used knots={}".format(len(L),3,len(knots)-bad_knots.sum()))
+                    print("Lmin,Lmax={:.3f},{:.3f}".format(L.min(), L.max()))
+                    print("knotmin,knotmax={:.3f},{:.3f}".format(knots.min(), knots.max()))
+                    raise e
         else:
             break
     #else:
