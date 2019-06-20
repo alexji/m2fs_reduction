@@ -530,7 +530,7 @@ def m2fs_subtract_one_dark(infile, outfile, dark, darkerr, darkheader):
     exptimeratio = header["EXPTIME"]/darkheader["EXPTIME"]
     darksub = img - dark * exptimeratio
     # Adjust the errors
-    darksuberr = np.sqrt(imgerr**2 + darkerr**2)
+    darksuberr = np.sqrt(imgerr**2) # no-var-sub + darkerr**2)
     # Zero negative values: I don't want to do this
     write_fits_two(outfile, darksub, darksuberr, header)
 
@@ -1619,7 +1619,7 @@ def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixc
     scatlightfit = (scatlightpoly.dot(coeff)).reshape(shape)
     
     data = R - scatlightfit
-    edata = eR + scatlightfit
+    edata = eR # no-var-sub + scatlightfit
     header.add_history("m2fs_subtract_scattered_light: subtracted scattered light")
     header.add_history("m2fs_subtract_scattered_light: degree={}".format(deg))
     header.add_history("m2fs_subtract_scattered_light: removed {} outlier pixels in {} iters".format(Noutliertotal, iter+1))

@@ -374,7 +374,7 @@ def m2fs_lsf_trace(dbname, workdir, fiberconfig, calibconfig):
 #################################################
 if __name__=="__main__":
     start = time.time()
-    if True:
+    if False:
         dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
         workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
         calibconfigname = "nov2017run.txt"
@@ -391,6 +391,14 @@ if __name__=="__main__":
         calibconfigname = "nov2017run.txt"
         fiberconfigname = "data/Bulge_GC1_b.txt"
         throughput_fname = os.path.join(workdir,"Bulge_GC1_b_throughput.npy")
+    """
+    dbname = "/Users/alexji/M2FS_DATA/Hyi1/rawM2FS.db"
+    workdir = "/Users/alexji/M2FS_DATA/Hyi1/reduced"
+    calibconfigname = "/Users/alexji/M2FS_DATA/Hyi1/hyi1run.txt"
+    fiberconfigname = "data/5targ_b.txt"
+    calibconfigname = workdir+"/5targ_throughput_b.npy"
+    """
+    
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(calibconfigname)
