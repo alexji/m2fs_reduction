@@ -374,7 +374,7 @@ def m2fs_lsf_trace(dbname, workdir, fiberconfig, calibconfig):
 #################################################
 if __name__=="__main__":
     start = time.time()
-    if False:
+    if True:
         dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
         workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
         calibconfigname = "nov2017run.txt"

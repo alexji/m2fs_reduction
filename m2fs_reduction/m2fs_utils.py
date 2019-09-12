@@ -1618,10 +1618,18 @@ def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixc
     scatlightpoly = np.polynomial.legendre.legvander2d(XN.ravel(), YN.ravel(), deg)
     scatlightfit = (scatlightpoly.dot(coeff)).reshape(shape)
     
+    resid = (scatlight-scatlightfit)[finite].ravel()
+    scatlightmed = np.median(resid)
+    scatlighterr = biweight_scale(resid)
+    print("scatlightmed",scatlightmed)
+    print("scatlighterr",scatlighterr)
+    
     data = R - scatlightfit
-    edata = eR # no-var-sub + scatlightfit
+    edata = np.sqrt(eR**2 + scatlighterr**2) # + scatlightfit no-var-sub
+    print("edata",edata)
     header.add_history("m2fs_subtract_scattered_light: subtracted scattered light")
     header.add_history("m2fs_subtract_scattered_light: degree={}".format(deg))
+    header.add_history("m2fs_subtract_scattered_light: resid median={} error={}".format(scatlightmed, scatlighterr))
     header.add_history("m2fs_subtract_scattered_light: removed {} outlier pixels in {} iters".format(Noutliertotal, iter+1))
     write_fits_two(outfname, data, edata, header)
     print("Wrote to {}".format(outfname))
@@ -2206,9 +2214,11 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextrac
             specestfunc = fit_S_with_profile(flat_to_sum.ravel(), L.ravel(), data_to_sum.ravel(), errs_to_sum.ravel(), 0,
                                              knots=Larr)
             specest = specestfunc(Larr)
+            """
             Fspecestfunc = fit_S_with_profile(flat_to_sum.ravel(), L.ravel(), Fdata_to_sum.ravel(), Ferrs_to_sum.ravel(), 0,
                                              knots=Larr)
             Fspecest = Fspecestfunc(Larr)
+            """
             #specest = np.sum(data_to_sum, axis=1)
             mask = np.ones_like(data_to_sum)
             # object profile and mask
@@ -2219,9 +2229,12 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextrac
                 specestfunc = fit_S_with_profile(flat_to_sum[mask].ravel(), L[mask].ravel(), data_to_sum[mask].ravel(), 
                                                  errs_to_sum[mask].ravel(), 0, knots=Larr)
                 specest = specestfunc(Larr)
+                """
                 Fspecestfunc = fit_S_with_profile(flat_to_sum[mask].ravel(), L[mask].ravel(), Fdata_to_sum[mask].ravel(),
                                                   Ferrs_to_sum[mask].ravel(), 0, knots=Larr)
                 Fspecest = Fspecestfunc(Larr)
+                """
+                Fspecest = np.sum(mask * flat_to_sum * Fdata_to_sum * Fivar_to_sum, axis=1)/np.sum(mask * flat_to_sum**2. * Fivar_to_sum, axis=1)
                 ## TODO recalculate pixel variances?
                 Nmask = np.sum(mask)
                 if lastNmask == Nmask: break
