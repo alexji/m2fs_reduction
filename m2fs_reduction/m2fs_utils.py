@@ -219,7 +219,7 @@ def calc_wave_corr(xarr, coeffs, framenum, ipeak, pixcortable=None):
     """
     Calc wave, but with offset from the default arc
     """
-    if pixcortable is None: pixcortable = np.load("arc1d/fit_frame_offsets.npy")
+    if pixcortable is None: pixcortable = np.load("arc1d/fit_frame_offsets.npy", allow_pickle=True)
     pixcor = pixcortable[framenum,ipeak]
     # The correction is in pixels. We apply a zero-point offset based on this.
     wave = calc_wave(xarr, coeffs)
@@ -1400,7 +1400,7 @@ def m2fs_get_pixel_functions(flatfname, arcfname, fiberconfig):
     
     workdir = os.path.dirname(arcfname)
     name = os.path.basename(arcfname)[:-5]
-    fitdata = np.load(os.path.join(workdir, name+"_wavecal_fitdata.npy"))
+    fitdata = np.load(os.path.join(workdir, name+"_wavecal_fitdata.npy"), allow_pickle=True)
     pfit, trueord, Nobj, deg, (Xmin, Xmax), (Ymin,Ymax) = [fitdata[i] for i in [0, 5, 6, 8, 11, 12]]
     def flambda(iobj, iord, X, Y):
         twodim = len(X.shape)==2
@@ -1864,6 +1864,25 @@ def m2fs_ghlb_extract(fname, flatfname, arcfname, fiberconfig, yscut, deg, sigma
         plt.close(fig)
     print("Total time: {:.1f}".format(time.time()-start))
     
+def m2fs_add_objnames_to_header(Nobj,header):
+    rb = header["SHOE"].lower()
+    if rb=="r": slitnums = [1,2,3,4,5,6,7,8]
+    if rb=="b": slitnums = [8,7,6,5,4,3,2,1]
+    fibernums = 1 + np.arange(16)
+    
+    namedict = {}
+    iobj = 0
+    for slitnum in slitnums:
+        for fibernum in fibernums:
+            if header["FIBER{}{:02}".format(slitnum,fibernum)] != "unplugged":
+                namedict["OBJ{:03}".format(iobj)] = header["FIBER{}{:02}".format(slitnum,fibernum)]
+                iobj += 1
+    assert iobj == Nobj, (iobj, Nobj)
+    for iobj in range(Nobj):
+        key = "OBJ{:03}".format(iobj)
+        header[key] = namedict[key]
+    return
+
 def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
                      Npix=2048, make_plot=True, throughput_fname=None):
     """
@@ -1924,10 +1943,11 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     trueord = fiberconfig[2]
     for iord in range(Norder):
         header["ECORD{}".format(iord)] = trueord[iord]
-    lines = fiberconfig[-1]
-    for iobj in range(Nobj):
-        fibnum = "".join(lines[iobj])
-        header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    #lines = fiberconfig[-1]
+    #for iobj in range(Nobj):
+    #    fibnum = "".join(lines[iobj])
+    #    header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    m2fs_add_objnames_to_header(Nobj,header)
     
     write_fits_two(outfname, outspec, Foutspec, header)
     
@@ -2025,10 +2045,11 @@ def m2fs_horne_flat_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
     trueord = fiberconfig[2]
     for iord in range(Norder):
         header["ECORD{}".format(iord)] = trueord[iord]
-    lines = fiberconfig[-1]
-    for iobj in range(Nobj):
-        fibnum = "".join(lines[iobj])
-        header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    #lines = fiberconfig[-1]
+    #for iobj in range(Nobj):
+    #    fibnum = "".join(lines[iobj])
+    #    header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    m2fs_add_objnames_to_header(Nobj,header)
     
     write_fits_two(outfname, outspec, Foutspec, header)
     write_fits_one(outfname_resid, R - model, header)
@@ -2060,7 +2081,7 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
     fiber_thru = m2fs_load_fiber_throughput(throughput_fname, fiberconfig)
     
     ghlb_data_path = os.path.join(os.path.dirname(flatfname), os.path.basename(flatfname)[:-5]+"_GHLB.npy")
-    ghlb_data = np.load(ghlb_data_path)
+    ghlb_data = np.load(ghlb_data_path, allow_pickle=True)
     
     dy = np.arange(-Nextract, Nextract+1)
     offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
@@ -2134,10 +2155,11 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
     trueord = fiberconfig[2]
     for iord in range(Norder):
         header["ECORD{}".format(iord)] = trueord[iord]
-    lines = fiberconfig[-1]
-    for iobj in range(Nobj):
-        fibnum = "".join(lines[iobj])
-        header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    #lines = fiberconfig[-1]
+    #for iobj in range(Nobj):
+    #    fibnum = "".join(lines[iobj])
+    #    header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    m2fs_add_objnames_to_header(Nobj,header)
     
     write_fits_two(outfname, outspec, Foutspec, header)
     write_fits_one(outfname_resid, R - model, header)
@@ -2167,7 +2189,7 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextrac
     fiber_thru = m2fs_load_fiber_throughput(throughput_fname, fiberconfig)
     
     ghlb_data_path = os.path.join(os.path.dirname(flatfname), os.path.basename(flatfname)[:-5]+"_GHLB.npy")
-    ghlb_data = np.load(ghlb_data_path)
+    ghlb_data = np.load(ghlb_data_path, allow_pickle=True)
     
     dy = np.arange(-Nextract, Nextract+1)
     offsets = np.tile(dy, Npix).reshape((Npix,len(dy)))
@@ -2258,10 +2280,11 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextrac
     trueord = fiberconfig[2]
     for iord in range(Norder):
         header["ECORD{}".format(iord)] = trueord[iord]
-    lines = fiberconfig[-1]
-    for iobj in range(Nobj):
-        fibnum = "".join(lines[iobj])
-        header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    #lines = fiberconfig[-1]
+    #for iobj in range(Nobj):
+    #    fibnum = "".join(lines[iobj])
+    #    header["OBJ{:03}".format(iobj)] = header["FIBER{}".format(fibnum)]
+    m2fs_add_objnames_to_header(Nobj,header)
     
     write_fits_two(outfname, outspec, Foutspec, header)
     write_fits_one(outfname_resid, R - model, header)
@@ -2409,7 +2432,7 @@ def m2fs_load_fiber_throughput(thrufname, fiberconfig):
     """ Calculate the median of the inner orders to determine fiber throughput """
     if thrufname is None: return np.ones(fiberconfig[0])
     # Nobj * Norder
-    thrumat, _ = np.load(thrufname)
+    thrumat, _ = np.load(thrufname, allow_pickle=True)
     throughput_orders = pick_throughput_orders(fiberconfig)
     thrumat = thrumat[:,throughput_orders]
     fiber_thru = np.median(thrumat, axis=1)
