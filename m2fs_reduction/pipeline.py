@@ -16,6 +16,7 @@ from m2fs_utils import m2fs_wavecal_fit_solution_one_arc
 from m2fs_utils import m2fs_get_pixel_functions, m2fs_load_trace_function
 from m2fs_utils import m2fs_subtract_scattered_light
 from m2fs_utils import m2fs_ghlb_extract, m2fs_sum_extract, m2fs_horne_flat_extract
+from m2fs_utils import m2fs_fox_extract
 from m2fs_utils import m2fs_horne_ghlb_extract, m2fs_spline_ghlb_extract
 from m2fs_utils import m2fs_process_throughput_frames #quick_1d_extract
 
@@ -302,6 +303,23 @@ def m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextrac
     
     mark_finished(workdir, "extract-sum")
 
+def m2fs_extract_fox_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract,
+                              throughput_fname=None):
+    """
+    Flat-relative optimal extraction (FOX) within an aperture of 2*Nextract+1 pixels around the trace
+    """
+    if check_finished(workdir, "extract-fox"): return
+    
+    objnums = get_obj_nums(calibconfig)
+    objfnames = [get_obj_file(objnum, dbname, workdir, calibconfig, "ds") for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    arcfnames = [get_arc_file(objnum, dbname, workdir, calibconfig, "d") for objnum in objnums]
+    for objfname, flatfname, arcfname in zip(objfnames, flatfnames, arcfnames):
+        m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract=Nextract, make_plot=True,
+                         throughput_fname=throughput_fname)
+    
+    mark_finished(workdir, "extract-fox")
+
 def m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract,
                             throughput_fname=None):
     """
@@ -444,15 +462,17 @@ if __name__=="__main__":
     ##### Extract flats and objects
     ### Simple sum extraction
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
-    ### Horne extraction with flat as profile
-    m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
+    ### Flat-relative optimal extraction
+    m2fs_extract_fox_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
+    ### Horne extraction with flat as profile (this is bad actually)
+    #m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     
     ### GHLB fit flats as profiles
-    m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig)
+    #m2fs_fit_flat_profiles(dbname, workdir, fiberconfig, calibconfig)
     ### Horne extraction with GHLB fit as profile
-    m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
+    #m2fs_extract_horne_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname)
     ### Spline extraction with GHLB fit as profile
-    m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname, sigma=10)
+    #m2fs_extract_spline_ghlb(dbname, workdir, fiberconfig, calibconfig, Nextract=5, throughput_fname=throughput_fname, sigma=10)
 
     print("Total time for {} objects: {:.1f}s".format(len(objnums), time.time()-start))
 
