@@ -1068,7 +1068,14 @@ def m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources, ma
     ## Load current source positions
     name = os.path.basename(fname)[:-5]
     source_catalog_fname = os.path.join(workdir, name+"m_sources.cat")
-    sources = Table.read(source_catalog_fname,hdu=2)
+    ## There is a weird bug here where it fails to read the first time, something about mutable OrderedDict
+    ## Trying twice seems to make it work. Maybe something about the registry.
+    from astropy.table import Table 
+    for i in range(2):
+        try:
+            sources = Table.read(source_catalog_fname,hdu=2)
+        except:
+            print("Failed to read {}, trying again".format(source_catalog_fname))
     # Allow neighbors and blends, but not anything else bad
     iigoodflag = sources["FLAGS"] < 4
     sources = sources[iigoodflag]
@@ -1590,7 +1597,7 @@ def model_scattered_light(data, errs, mask,
     print("scatlightmed",scatlightmed)
     print("scatlighterr",scatlighterr)
 
-    return scatlightfit, scatlightmed, scatlighterr, Noutliertotal
+    return scatlightfit, (scatlightmed, scatlighterr, Noutliertotal, iter, scatlight)
 
 def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixcut,
                                   badcolranges=[], deg=[5,5], sigma=3.0, maxiter=10,
@@ -1642,7 +1649,7 @@ def m2fs_subtract_scattered_light(fname, flatfname, arcfname, fiberconfig, Npixc
             used[X_to_get, Y_to_get] = True
     #print("m2fs_subtract_scattered_light: took {:.1f}s to find extracted pixels".format(time.time()-start))
     
-    scatlightfit, scatlightmed, scatlighterr, Noutliertotal = model_scattered_light(R, eR, ~used)
+    scatlightfit, (scatlightmed, scatlighterr, Noutliertotal, iter, scatlight) = model_scattered_light(R, eR, ~used)
     
     data = R - scatlightfit
     edata = np.sqrt(eR**2 + scatlighterr**2) # + scatlightfit no-var-sub
@@ -1903,8 +1910,8 @@ def m2fs_add_objnames_to_header(Nobj,header):
         header[key] = namedict[key]
     return
 
-def fox_extract(S, eS, F, maxiter=9, kappa=5.0, readnoise=3.0, gain=1.0,
-                apply_redchi2=False):
+def fox_extract(S, eS, F, maxiter=99, kappa=5.0, readnoise=2.7, gain=1.0,
+                apply_redchi2=True):
     assert np.all(S.shape == eS.shape)
     assert np.all(S.shape == F.shape)
     Nx = S.shape[0] # number of pixels to extract
@@ -1919,36 +1926,39 @@ def fox_extract(S, eS, F, maxiter=9, kappa=5.0, readnoise=3.0, gain=1.0,
     
     # Inital extraction estimate
     rx = np.sum(M * w * FS, axis=1)/np.sum(M * w * F2, axis=1)
+    S_hat = F*rx[:,np.newaxis]
+    error_squared = gain*S_hat + readnoise**2
+    w = M/error_squared
+    erx2 = 1/np.sum(w*F2, axis=1)
     
     # Iterate
     for i in range(maxiter):
-        # Estimate new pixel uncertainties using model
-        S_hat = F*rx[:,np.newaxis]
-        error_squared = gain*S_hat + readnoise**2
-        w = M/error_squared
-        erx2 = 1/np.sum(w*F2, axis=1)
-        
         # Find cosmic rays and update mask
-        new_M = (S - S_hat < kappa*(error_squared - F2*erx2[:,np.newaxis]))
+        new_M = (np.abs(S - S_hat) < kappa*(error_squared - F2*erx2[:,np.newaxis]))
+        if new_M.sum() == 0: break
         if np.sum(M & new_M) > Nx: M = M & new_M
         
         # Re-extract
         rx = np.sum(w * FS, axis=1)/np.sum(w * F2, axis=1)
-        if new_M.sum() == 0: break
+        # Estimate new pixel uncertainties using model
+        S_hat = F*rx[:,np.newaxis]
+        error_squared = gain*S_hat + readnoise**2
+        w = M.astype(float)/error_squared
+        erx2 = 1/np.sum(w*F2, axis=1)
     # Rescale errors
     dof = M.sum() - Nx
-    reduced_chi2 = np.nansum(M*w * (S - F*rx[:,np.newaxis])**2)/dof
+    reduced_chi = np.sqrt(np.nansum(w * (S - F*rx[:,np.newaxis])**2)/dof)
     erx = np.sqrt(erx2)
     if apply_redchi2:
-        print("Rescaling errors by reduced chi2")
-        erx = reduced_chi2 * erx
-    return rx, erx, M, reduced_chi2
+        print("Rescaling errors by reduced chi = {:.1f} M={} Nx={}".format(reduced_chi, M.sum(), Nx))
+        erx = reduced_chi * erx
+    return rx, erx, M, reduced_chi
 
 def m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
-                     maxiter=9, kappa=5.0, readnoise=3.0, gain=1.0,
+                     maxiter=9, kappa=5.0, readnoise=2.7, gain=1.0,
                      Npix=2048, make_plot=True, throughput_fname=None):
     """
-    Following Zechmeister et al. 2013. Extracts s/f, the object spectrum divided by the intrinsic flat spectrum.
+    Following Zechmeister et al. 2014. Extracts s/f, the object spectrum divided by the intrinsic flat spectrum.
     Then multiply by the simple sum-extraction of the flat (in the same pixels).
     """
     start = time.time()
@@ -1956,6 +1966,7 @@ def m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     assert objfname.endswith(".fits")
     name = os.path.basename(objfname)[:-5]
     outfname = os.path.join(outdir,name+"_fox_specs.fits")
+    outfname_resid = os.path.join(outdir,name+"_fox_resid.fits")
     
     R, eR, header = read_fits_two(objfname)
     F, eF, header = read_fits_two(flatfname)
@@ -1971,6 +1982,8 @@ def m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     outspec = np.zeros((Nobj,Norder,Npix,3))
     Foutspec = np.zeros((Nobj,Norder,Npix,3))
     used = np.zeros(R.shape, dtype=int)
+    model = np.zeros_like(R)
+    TMPRESID = []
     for iobj in range(Nobj):
         for iord in range(Norder):
             Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
@@ -1986,7 +1999,7 @@ def m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
             terrs = eR[X_to_get, Y_to_get]
             tflat =  F[X_to_get, Y_to_get]
             
-            rx, erx, M, redchi2 = fox_extract(tdata, terrs, tflat, maxiter=maxiter, kappa=kappa, readnoise=readnoise, gain=gain)
+            rx, erx, M, redchi = fox_extract(tdata, terrs, tflat, maxiter=maxiter, kappa=kappa, readnoise=readnoise, gain=gain)
             
             # Sum-extract flat spectrum
             Fdata_to_sum =  F[X_to_get, Y_to_get]
@@ -2001,9 +2014,12 @@ def m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
             Foutspec[iobj, iord, Xarr, 1] = Foutspec[iobj, iord, Xarr, 1]/Fscale
             Foutspec[iobj, iord, Xarr, 2] = np.sqrt(np.sum(Fvars_to_sum, axis=1))/fiber_thru[iobj]/Fscale
             
-            #print(redchi2, M.sum())
+            #print(redchi, M.sum())
             
             used[X_to_get, Y_to_get] += M.astype(int)
+            
+            model[X_to_get, Y_to_get] += Fdata_to_sum*rx[:,np.newaxis]
+            TMPRESID.append(((tdata-model[X_to_get, Y_to_get])[M],terrs[M]))
     
     header["NEXTRACT"] = Nextract
     header.add_history("m2fs_fox_extract: FOX extraction with window 2*{}+1".format(Nextract))
@@ -2014,6 +2030,7 @@ def m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
         header["ECORD{}".format(iord)] = trueord[iord]
     m2fs_add_objnames_to_header(Nobj,header)
     
+    np.save("{}/{}_tmpresid.npy".format(outdir, name), TMPRESID)
     write_fits_two(outfname, outspec, Foutspec, header)
     
     print("FOX extract of {} took {:.1f}".format(name, time.time()-start))
@@ -2022,6 +2039,8 @@ def m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
         im = ax.imshow(used.T, origin="lower",interpolation='none')
         fig.colorbar(im)
         fig.savefig("{}/{}_fox_usedpix.png".format(outdir,name))
+
+    write_fits_one(outfname_resid, R - model, header)
         
 def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
                      Npix=2048, make_plot=True, throughput_fname=None):

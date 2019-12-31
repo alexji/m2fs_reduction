@@ -392,7 +392,7 @@ def m2fs_lsf_trace(dbname, workdir, fiberconfig, calibconfig):
 #################################################
 if __name__=="__main__":
     start = time.time()
-    if True:
+    if False:
         dbname = "/Users/alexji/M2FS_DATA/test_rawM2FSr.db"
         workdir = "/Users/alexji/M2FS_DATA/test_reduction_files/r"
         calibconfigname = "nov2017run.txt"
@@ -463,7 +463,7 @@ if __name__=="__main__":
     ### Simple sum extraction
     m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     ### Flat-relative optimal extraction
-    m2fs_extract_fox_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
+    m2fs_extract_fox_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=3, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile (this is bad actually)
     #m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     
