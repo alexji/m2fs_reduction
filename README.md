@@ -65,3 +65,5 @@ Including some code adapted from T. Hansen, J. Simon, G. Blanc
 
 The recommended extraction procedure is the spline fit extraction. This is the most robust to cosmic rays and should have the best object profiles (minimally affected by ghosts, overlapping orders, and other weird things).
 However I bet there will be cases causing the extraction model to be wrong, so make sure to examine the residuals, GHLB profile fits, etc. before using for science.
+
+NOTE: source extractor must be updated to a relatively recent version. Alex uses v2.19
