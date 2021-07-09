@@ -48,7 +48,7 @@ def load_db(dbname, calibconfig=None):
     if calibconfig is None:
         return tab
     else:
-        allnums = np.unique(calibconfig.to_pandas().as_matrix())
+        allnums = np.unique(calibconfig.to_pandas().values)
         indices = np.array([num in allnums for num in tab["NUM"]])
         return tab[indices]
 def get_obj_nums(calibconfig):
@@ -135,7 +135,7 @@ def m2fs_traceflat_fast(dbname, workdir, fiberconfig, calibconfig, suffix="d"):
     for fname in np.unique(fnames):
         m2fs_new_trace_orders_multidetect(fname, fiberconfig, make_plot=True)
     mark_finished(workdir, "traceflatfast-{}".format(suffix))
-def m2fs_traceflat_slow(dbname, workdir, fiberconfig, calibconfig, suffix="ds"):
+def m2fs_traceflat_slow(dbname, workdir, fiberconfig, calibconfig, suffix="ds", midx=None):
     if check_finished(workdir, "traceflatslow-{}".format(suffix)): return
     print("Running traceflatslow with suffix {}".format(suffix))
     
@@ -152,13 +152,13 @@ def m2fs_traceflat_slow(dbname, workdir, fiberconfig, calibconfig, suffix="ds"):
     print("Running master flat (not really used right now)")
     m2fs_make_master_flat(fnames, masterflatname)
     # Trace master flat
-    m2fs_trace_orders(masterflatname, fiberconfig, trace_degree=7, stdev_degree=3, make_plot=True)
+    m2fs_trace_orders(masterflatname, fiberconfig, trace_degree=7, stdev_degree=3, make_plot=True, midx=midx)
     
     ## Trace individual flats
     objnums = get_obj_nums(calibconfig)
     fnames = [get_flat_file(objnum, dbname, workdir, calibconfig, suffix) for objnum in objnums]
     for fname in np.unique(fnames):
-        m2fs_trace_orders(fname, fiberconfig, make_plot=True)
+        m2fs_trace_orders(fname, fiberconfig, make_plot=True, midx=midx)
     mark_finished(workdir, "traceflatslow-{}".format(suffix))
 
 def m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname, masterflatname):
@@ -188,7 +188,8 @@ def m2fs_wavecal_find_sources(dbname, workdir, calibconfig):
     print("Finding all sources took {:.1f}s".format(time.time()-start))
     mark_finished(workdir, "wavecal-findsources")
     
-def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig, max_match_dist=2.0):
+def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig, max_match_dist=2.0,
+                                  origarcfname=None):
     if check_finished(workdir, "wavecal-identifysources"): return
     
     ## TODO use fiberconfig to get this somehow!!!
@@ -205,10 +206,19 @@ def m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig, max
     ## Get list of arcs to process
     objnums = get_obj_nums(calibconfig)
     fnames = [get_arc_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
+    flatfnames = [get_flat_file(objnum, dbname, workdir, calibconfig) for objnum in objnums]
     
     start = time.time()
-    for fname in fnames:
-        m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources, max_match_dist=max_match_dist)
+    for fname, flatfname in zip(fnames, flatfnames):
+        if origarcfname is None:
+            m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources,
+                                                  max_match_dist=max_match_dist)
+        else:
+            m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources,
+                                                  max_match_dist=max_match_dist,
+                                                  origarcfname=origarcfname,
+                                                  flatfname=flatfname,
+                                                  fiberconfig=fiberconfig)
     print("Identifying all sources took {:.1f}".format(time.time()-start))
     mark_finished(workdir, "wavecal-identifysources")
 
@@ -392,6 +402,7 @@ def m2fs_lsf_trace(dbname, workdir, fiberconfig, calibconfig):
 #################################################
 if __name__=="__main__":
     start = time.time()
+    """
     if True:
         dbname = "/Volumes/My Passport for Mac/observing_data/M2FS_DATA/Hyi1/redM2FS.db"
         workdir = "/Volumes/My Passport for Mac/observing_data/M2FS_DATA/Hyi1/reduced/red"
@@ -404,6 +415,17 @@ if __name__=="__main__":
         calibconfigname = "/Volumes/My Passport for Mac/observing_data/M2FS_DATA/Hyi1/hyi1run.txt"
         fiberconfigname = "data/5targ_b.txt"
         throughput_fname = os.path.join(workdir,"5targ_b_throughput.npy")
+    """
+    dbname = "/Users/alexji/M2FS_DATA/Hyi1/redM2FS.db"
+    workdir = "/Users/alexji/M2FS_DATA/Hyi1/reduced"
+    calibconfigname = "/Users/alexji/M2FS_DATA/Hyi1/hyi1run.txt"
+    fiberconfigname = "data/5targ_r.txt"
+    throughput_fname = os.path.join(workdir,"5targ_r_throughput.npy")
+    midx=750 #from MKRW
+    origarcfname="/Users/alexji/Dropbox/Hyi1/Files4Alex_20210706/r2573d.fits"
+    #origarcfname=None # this turns off xcor
+    max_match_dist=2.0
+    
     assert os.path.exists(dbname)
     assert os.path.exists(workdir)
     assert os.path.exists(calibconfigname)
@@ -422,48 +444,47 @@ if __name__=="__main__":
     m2fs_biastrim(dbname, workdir)
     m2fs_darksub(dbname, workdir)
 
-def tmp():
     calibconfig = ascii.read(calibconfigname)
     fiberconfig = m2fs_parse_fiberconfig(fiberconfigname)
     objnums = get_obj_nums(calibconfig)
     
     ### Throughput correction with twilight flats
     #m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname)
-    tab = load_db(dbname)
-    tab = tab[tab["EXPTYPE"]=="Thru"]
-    Nthru = len(tab)
-    thrufnames = [get_file(row["FILE"], workdir, "d") for row in tab]
-    thrufnames_scat = [get_file(row["FILE"], workdir, "ds") for row in tab]
-    # Calculate throughput corrections
-    m2fs_process_throughput_frames(thrufnames, thrufnames_scat, throughput_fname, fiberconfig)
+    #tab = load_db(dbname)
+    #tab = tab[tab["EXPTYPE"]=="Thru"]
+    #Nthru = len(tab)
+    #thrufnames = [get_file(row["FILE"], workdir, "d") for row in tab]
+    #thrufnames_scat = [get_file(row["FILE"], workdir, "ds") for row in tab]
+    ## Calculate throughput corrections
+    #m2fs_process_throughput_frames(thrufnames, thrufnames_scat, throughput_fname, fiberconfig)
     
     ###### Tracing, scattered light
     ## Quick flat trace and object profile estimate
-    m2fs_traceflat_fast(dbname, workdir, fiberconfig, calibconfig, suffix="d")
+    m2fs_traceflat_slow(dbname, workdir, fiberconfig, calibconfig, suffix="d", midx=midx)
     ## Subtract scattered light
     m2fs_scattered_light(dbname, workdir, fiberconfig, calibconfig)
     ## Slower/more accurate flat trace and object profile AFTER scattered light subtraction
-    m2fs_traceflat_slow(dbname, workdir, fiberconfig, calibconfig, suffix="ds")
+    m2fs_traceflat_slow(dbname, workdir, fiberconfig, calibconfig, suffix="ds", midx=midx)
     ## Throughput correction with twilight flats and master flat trace (includes scattered light)
-    m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname,
-                    get_file("master_flat",workdir,"_ds"))
+    #m2fs_throughput(dbname, workdir, fiberconfig, throughput_fname,
+    #                get_file("master_flat",workdir,"_ds"))
     
     ###### Wavelength Calibration
     ## Find sources in 2D arc spectrum (currently a separate step running sextractor)
     m2fs_wavecal_find_sources(dbname, workdir, calibconfig)
 
-def tmp():
     # NOTE: IF AN ARC HAS NOT BEEN IDENTIFIED, IT NEEDS TO BE DONE MANUALLY NOW
-    ## Identify features in 2D spectrum with coherent point drift
-    m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig)
+    ## Identify features in 2D spectrum. If specify origarcfname, does cross-correlation in as lice.
+    m2fs_wavecal_identify_sources(dbname, workdir, fiberconfig, calibconfig,
+                                  origarcfname=origarcfname, max_match_dist=max_match_dist)
     ## Use features to fit Xccd,Yccd(obj, order, lambda)
     m2fs_wavecal_fit_solution(dbname, workdir, fiberconfig, calibconfig)
     
     ##### Extract flats and objects
     ### Simple sum extraction
-    m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
+    m2fs_extract_sum_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=4)#, throughput_fname=throughput_fname)
     ### Flat-relative optimal extraction
-    m2fs_extract_fox_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=3, throughput_fname=throughput_fname)
+    m2fs_extract_fox_aperture(dbname, workdir, fiberconfig, calibconfig, Nextract=3)#, throughput_fname=throughput_fname)
     ### Horne extraction with flat as profile (this is bad actually)
     #m2fs_extract_horne_flat(dbname, workdir, fiberconfig, calibconfig, Nextract=4, throughput_fname=throughput_fname)
     

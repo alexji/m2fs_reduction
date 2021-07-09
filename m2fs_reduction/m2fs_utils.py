@@ -2,6 +2,7 @@ from __future__ import (division, print_function, absolute_import,
                         unicode_literals)
 
 import numpy as np
+#from scipy import fft # someday we will update scipy...
 from astropy.io import ascii, fits
 from astropy.table import Table
 from astropy.stats import biweight_location, biweight_scale
@@ -1061,9 +1062,107 @@ def m2fs_wavecal_find_sources_one_arc(fname, workdir):
     cmd = "sex {0:} -c {1:}/batch_config.sex -parameters_name {1:}/default.param -filter_name {1:}/default.conv -catalog_name {2:}_sources.cat -checkimage_type OBJECTS -checkimage_name {2:}_chkobj.fits".format(medfiltname, sourcefind_path, os.path.join(workdir, name+"m"))
     subprocess.run(cmd, shell=True)
     
-def m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources, max_match_dist=2.0):
+def _xcor(img1, img2, maxpercentile=99, smoothx=3, smoothy=1):
+    """
+    Calculate the shift between img1 and img2 (has to be the same size)
+    Shift < 0 means img2 is before img1
+    Returns shift_0, shift_1
+    
+    Code adapted from Katy Rodriguez-Wimberly
+    """
+    assert img1.shape == img2.shape
+    
+    ## Avoid messing up the actual data
+    img1 = img1.copy()
+    img2 = img2.copy()
+    
+    ## Clip the biggest values, arc emission lines can dominate the xcor
+    for img in [img1, img2]:
+        maxval = np.percentile(img, maxpercentile)
+        img[img > maxval] = maxval
+    
+    ## Use hanning window to downweight the edges
+    hanx = np.hanning(img1.shape[0])
+    hany = np.hanning(img1.shape[1])
+    han = hanx[:,np.newaxis] * hany[np.newaxis,:]
+    
+    ## Run xcor
+    F1 = np.fft.fft2(img1 * han)
+    F1 = ndimage.fourier_gaussian(F1, sigma=(smoothx, smoothy))
+    F1 = np.conjugate(F1)
+    F2 = np.fft.fft2(img2 * han)
+    F2 = ndimage.fourier_gaussian(F2, sigma=(smoothx, smoothy))
+    CC = np.real(np.fft.ifft2(F1*F2))
+    CC = np.fft.fftshift(CC)
+    
+    ## Find shifts
+    zero_index_0 = int(img1.shape[0] / 2)
+    zero_index_1 = int(img1.shape[1] / 2)
+    max_shift = np.where(CC == np.max(CC))
+    shift_0 = max_shift[0] - zero_index_0
+    shift_1 = max_shift[1] - zero_index_1
+    return shift_0, shift_1
+
+def m2fs_wavecal_xcor_by_object(arcfname, origarcfname, flatfname, fiberconfig):
+    """
+    Use cross-correlation to find shifts for individual fibers
+    Outputs Nfiber x 2, where column 0 is the x-shift and column 1 is the y-shift
+    
+    The sign is such that you add the result of this to the original arc coordinates to shift them to the new arc.
+    """
+    ## Load the images
+    newarc, err1, header1 = read_fits_two(arcfname)
+    oldarc, err2, header2 = read_fits_two(origarcfname)
+    assert newarc.shape == oldarc.shape, (newarc.shape, oldarc.shape)
+    
+    ## Set up
+    Nobj, Norder = fiberconfig[0], fiberconfig[1]
+    allYmin, allYmax = 0, newarc.shape[0]
+    tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
+    allshifts = np.zeros((Nobj,2)) # X, Y
+    
+    ## For each object fiber, run a cross correlation and save the shift
+    for iobj in range(Nobj):
+        ## Get Ymin, Ymax
+        Ymin, Ymax = allYmax, allYmin
+        for iord in range(Norder):
+            itrace = iobj*Norder + iord
+            Xarr = np.arange(fiberconfig[4][iord][0], fiberconfig[4][iord][1]+1) 
+            Yarr = tracefn(iobj, iord, Xarr)
+            Ymax = max(Ymax, np.max(Yarr)+1)
+            Ymin = min(Ymin, np.min(Yarr))
+        ## Increase the buffer by 5%
+        dY = 0.05*(Ymax - Ymin)
+        Ymin = int(max(allYmin, Ymin - dY))
+        Ymax = int(min(allYmax, Ymax + dY))
+        print(f"iobj {iobj} Ymin={Ymin} Ymax={Ymax}")
+        
+        ## Cross correlate image sections
+        shiftX, shiftY = _xcor(oldarc[:,Ymin:Ymax], newarc[:,Ymin:Ymax])
+        # if shift < 0, this means newarc < oldarc ==> oldarc + shift = newarc
+        # This is the sign that we want: add the shift to the old coordinates to get the new coordinates.
+        allshifts[iobj,0] = shiftX
+        allshifts[iobj,1] = shiftY
+    
+    return allshifts
+    
+def m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources,
+                                          max_match_dist=2.0,
+                                          origarcfname=None, flatfname=None, fiberconfig=None):
+    """ To run xcor, include origarcfname, flatfname, fiberconfig as keywords """
     ## Load positions of previously identified sources
     identified_positions = np.vstack([identified_sources["X"],identified_sources["Y"]]).T
+    ## Shift previously identified sources using cross-correlation if origarcfname is given
+    if (origarcfname is not None) and (flatfname is not None) and (fiberconfig is not None):
+        print("Computing cross-correlations",fname,origarcfname)
+        allshifts = m2fs_wavecal_xcor_by_object(fname, origarcfname, flatfname, fiberconfig)
+        Nobjs, Norders = fiberconfig[0], fiberconfig[1]
+        for iobj in range(Nobjs):
+            print(f"Obj {iobj}: shiftX={allshifts[iobj,0]:+6.1f} shiftY={allshifts[iobj,1]:+6.1f}")
+            ii = identified_sources["iobj"] == iobj
+            identified_positions[ii,0] += allshifts[iobj,0]
+            identified_positions[ii,1] += allshifts[iobj,1]
+        print("Finished xcor shifts")
     
     ## Load current source positions
     name = os.path.basename(fname)[:-5]
@@ -1101,13 +1200,16 @@ def m2fs_wavecal_identify_sources_one_arc(fname, workdir, identified_sources, ma
     ## Transform identified points to actual points
     ## Right now just a mean zero-point offset in X and Y, no scaling/rotation
     ## TODO can update to affine transformation or CPD, depending on if it works or not
-    dX = biweight_location(Xi - identified_sources[finite]["X"])
-    dY = biweight_location(Yi - identified_sources[finite]["Y"])
-    print("Mean overall shift: dX={:.3f} dY={:.3f}".format(dX, dY))
-    if np.isnan(dX): dX = 0.0; print("biweight_location failed, setting dX=0")
-    if np.isnan(dY): dY = 0.0; print("biweight_location failed, setting dY=0")
-    identified_positions[:,0] = identified_positions[:,0] + dX
-    identified_positions[:,1] = identified_positions[:,1] + dY
+    if origarcfname is None:
+        dX = biweight_location(Xi - identified_sources[finite]["X"])
+        dY = biweight_location(Yi - identified_sources[finite]["Y"])
+        print("Mean overall shift: dX={:.3f} dY={:.3f}".format(dX, dY))
+        if np.isnan(dX): dX = 0.0; print("biweight_location failed, setting dX=0")
+        if np.isnan(dY): dY = 0.0; print("biweight_location failed, setting dY=0")
+        identified_positions[:,0] = identified_positions[:,0] + dX
+        identified_positions[:,1] = identified_positions[:,1] + dY
+    else:
+        dX = dY = 0.0
     
     ## Do final match after transformation
     distances, indexes = kdtree.query(identified_positions, distance_upper_bound=max_match_dist)
