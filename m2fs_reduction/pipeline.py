@@ -422,7 +422,7 @@ if __name__=="__main__":
     fiberconfigname = "data/5targ_r.txt"
     throughput_fname = os.path.join(workdir,"5targ_r_throughput.npy")
     midx=750 #from MKRW
-    origarcfname="/Users/alexji/Dropbox/Hyi1/Files4Alex_20210706/r2573d.fits"
+    origarcfname="/Users/alexji/M2FS_DATA/Hyi1/reduced/r2573d.fits"
     #origarcfname=None # this turns off xcor
     max_match_dist=2.0
     
