@@ -2071,7 +2071,7 @@ def m2fs_fox_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     outfname_resid = os.path.join(outdir,name+"_fox_resid.fits")
     
     R, eR, header = read_fits_two(objfname)
-    F, eF, header = read_fits_two(flatfname)
+    F, eF, header2 = read_fits_two(flatfname)
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
@@ -2157,7 +2157,7 @@ def m2fs_sum_extract(objfname, flatfname, arcfname, fiberconfig, Nextract,
     outfname = os.path.join(outdir,name+"_sum_specs.fits")
     
     R, eR, header = read_fits_two(objfname)
-    F, eF, header = read_fits_two(flatfname)
+    F, eF, header2 = read_fits_two(flatfname)
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
@@ -2335,7 +2335,7 @@ def m2fs_horne_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextract
     outfname_resid = os.path.join(outdir,name+"_horneghlb_resid.fits")
     
     R, eR, header = read_fits_two(objfname)
-    F, eF, header = read_fits_two(flatfname)
+    F, eF, header2 = read_fits_two(flatfname)
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
@@ -2443,7 +2443,7 @@ def m2fs_spline_ghlb_extract(objfname, flatfname, arcfname, fiberconfig, Nextrac
     outfname_resid = os.path.join(outdir,name+"_splineghlb_resid.fits")
     
     R, eR, header = read_fits_two(objfname)
-    F, eF, header = read_fits_two(flatfname)
+    F, eF, header2 = read_fits_two(flatfname)
     tracefn = m2fs_load_trace_function(flatfname, fiberconfig)
     ysfunc, Lfunc = m2fs_get_pixel_functions(flatfname,arcfname,fiberconfig)
     Nobj, Norder = fiberconfig[0], fiberconfig[1]
